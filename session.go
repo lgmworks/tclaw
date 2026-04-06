@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -24,6 +26,33 @@ var (
 	sessions   = make(map[string]*Session)
 	sessionsMu sync.RWMutex
 )
+
+// adoptExistingSessions finds running tmux sessions and registers them in tclaw.
+func adoptExistingSessions() {
+	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}:#{pane_current_path}")
+	out, err := cmd.Output()
+	if err != nil {
+		return // no tmux server or no sessions
+	}
+
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		name := parts[0]
+		dir := ""
+		if len(parts) > 1 {
+			dir = parts[1]
+		}
+
+		sessionsMu.Lock()
+		if _, exists := sessions[name]; !exists {
+			sessions[name] = &Session{Name: name, Dir: dir}
+		}
+		sessionsMu.Unlock()
+	}
+}
 
 // sanitizeName converts a directory path into a safe tmux session name.
 // "/home/user/mi proyecto ñoño" → "home-user-mi-proyecto-nono"
@@ -64,7 +93,35 @@ func sanitizeName(dir string) string {
 	return s
 }
 
+// resolveDir makes the dir relative to CWD, stripping leading slashes,
+// and creates it if it doesn't exist.
+func resolveDir(dir string) (string, error) {
+	// Strip leading slashes — "/Users/private" becomes "Users/private"
+	dir = strings.TrimLeft(dir, "/\\")
+	if dir == "" {
+		dir = "."
+	}
+
+	// Resolve to absolute path relative to CWD
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("invalid path: %w", err)
+	}
+
+	// Create directory if it doesn't exist
+	if err := os.MkdirAll(abs, 0755); err != nil {
+		return "", fmt.Errorf("cannot create directory: %w", err)
+	}
+
+	return abs, nil
+}
+
 func createSession(dir string) (*Session, error) {
+	absDir, err := resolveDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
 	name := sanitizeName(dir)
 
 	sessionsMu.Lock()
@@ -74,8 +131,8 @@ func createSession(dir string) (*Session, error) {
 	}
 	sessionsMu.Unlock()
 
-	// Create tmux session in background, starting in the given directory
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", name, "-c", dir)
+	// Create tmux session in background, starting in the resolved directory
+	cmd := exec.Command("tmux", "new-session", "-d", "-s", name, "-c", absDir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("tmux new-session: %s: %w", string(out), err)
 	}
@@ -86,7 +143,7 @@ func createSession(dir string) (*Session, error) {
 		return nil, fmt.Errorf("tmux send-keys claude: %s: %w", string(out), err)
 	}
 
-	s := &Session{Name: name, Dir: dir}
+	s := &Session{Name: name, Dir: absDir}
 	sessionsMu.Lock()
 	sessions[name] = s
 	sessionsMu.Unlock()
@@ -137,18 +194,31 @@ func (s *Session) SendInput(text string) error {
 	return nil
 }
 
-func (s *Session) Capture() (string, error) {
-	cmd := exec.Command("tmux", "capture-pane", "-t", s.Name, "-p", "-S", "-1000")
+// SendKey sends a raw tmux key (e.g. "Up", "Down", "Enter", "Escape", "y", "n").
+func (s *Session) SendKey(key string) error {
+	cmd := exec.Command("tmux", "send-keys", "-t", s.Name, key)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux send-keys: %s: %w", string(out), err)
+	}
+	return nil
+}
+
+// capturePane captures the tmux pane content by session name.
+func capturePane(name string) (string, error) {
+	cmd := exec.Command("tmux", "capture-pane", "-t", name, "-p", "-S", "-1000")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("tmux capture-pane: %w", err)
 	}
 
-	// Strip trailing blank lines (like sed '/^$/d' but only trailing)
 	lines := strings.Split(string(out), "\n")
 	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
 		lines = lines[:len(lines)-1]
 	}
 
 	return strings.Join(lines, "\n"), nil
+}
+
+func (s *Session) Capture() (string, error) {
+	return capturePane(s.Name)
 }

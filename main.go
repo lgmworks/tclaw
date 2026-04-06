@@ -21,6 +21,8 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 func main() {
+	adoptExistingSessions()
+
 	mux := http.NewServeMux()
 
 	// REST API
@@ -38,6 +40,9 @@ func main() {
 
 	// WebSocket
 	mux.HandleFunc("/ws/", handleWebSocket)
+
+	// Frontend
+	mux.Handle("/", http.FileServer(http.Dir("web")))
 
 	addr := ":8080"
 	log.Printf("tclaw listening on %s", addr)

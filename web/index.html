@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tclaw</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 14px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #app { display: flex; flex-direction: column; height: 100vh; }
+
+    .header {
+      padding: 8px 16px;
+      background: #16213e;
+      border-bottom: 1px solid #0f3460;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .header h1 { font-size: 16px; color: #e94560; }
+    .header .session-name { color: #53a8b6; font-size: 13px; }
+    .header .status {
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+    .status-ready { background: #2d6a4f; color: #95d5b2; }
+    .status-busy { background: #7f4f24; color: #ddb892; }
+    .status-disconnected { background: #6c757d; color: #dee2e6; }
+
+    .sessions-bar {
+      padding: 6px 16px;
+      background: #0f3460;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .sessions-bar button {
+      background: #16213e;
+      color: #e0e0e0;
+      border: 1px solid #1a1a2e;
+      padding: 4px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 12px;
+    }
+    .sessions-bar button:hover { background: #1a1a2e; }
+    .sessions-bar button.active { border-color: #e94560; color: #e94560; }
+    .sessions-bar .new-btn { color: #95d5b2; border-color: #2d6a4f; }
+
+    .output {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 16px;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      line-height: 1.4;
+    }
+
+    .input-bar {
+      display: flex;
+      padding: 8px 16px;
+      background: #16213e;
+      border-top: 1px solid #0f3460;
+      gap: 8px;
+    }
+    .input-bar input {
+      flex: 1;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      border: 1px solid #0f3460;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 14px;
+      outline: none;
+    }
+    .input-bar input:focus { border-color: #e94560; }
+    .input-bar button {
+      background: #e94560;
+      color: white;
+      border: none;
+      padding: 8px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: inherit;
+      font-weight: bold;
+    }
+    .input-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .keys-bar {
+      display: flex;
+      padding: 4px 16px;
+      background: #16213e;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+    .keys-bar button {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      border: 1px solid #0f3460;
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 12px;
+      min-width: 36px;
+    }
+    .keys-bar button:hover { border-color: #e94560; color: #e94560; }
+    .keys-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal {
+      background: #16213e;
+      border: 1px solid #0f3460;
+      border-radius: 8px;
+      padding: 24px;
+      min-width: 400px;
+    }
+    .modal h2 { margin-bottom: 16px; color: #e94560; font-size: 16px; }
+    .modal input {
+      width: 100%;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      border: 1px solid #0f3460;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 14px;
+      margin-bottom: 16px;
+      outline: none;
+    }
+    .modal .actions { display: flex; gap: 8px; justify-content: flex-end; }
+    .modal .actions button {
+      padding: 6px 16px;
+      border-radius: 4px;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .modal .actions .cancel { background: #6c757d; color: white; }
+    .modal .actions .confirm { background: #e94560; color: white; }
+  </style>
+</head>
+<body>
+
+<script type="importmap">
+  {
+    "imports": {
+      "vue": "https://unpkg.com/vue@3/dist/vue.esm-browser.js"
+    }
+  }
+</script>
+
+<div id="app">
+  <div class="header">
+    <h1>tclaw</h1>
+    <span class="session-name" v-if="activeSession">{{ activeSession }}</span>
+    <span class="status" :class="statusClass">{{ statusText }}</span>
+  </div>
+
+  <div class="sessions-bar">
+    <span v-for="s in sessions" :key="s.name" style="display:inline-flex;align-items:center;gap:2px;">
+      <button
+        :class="{ active: s.name === activeSession }"
+        @click="switchSession(s.name)"
+      >{{ s.name }}</button>
+      <button
+        style="padding:4px 6px;color:#e94560;background:none;border:none;cursor:pointer;font-size:14px;"
+        @click.stop="closeSession(s.name)"
+        title="Close session"
+      >&times;</button>
+    </span>
+    <button class="new-btn" @click="showNewModal = true">+ new</button>
+  </div>
+
+  <div class="output" ref="outputEl">{{ output }}</div>
+
+  <div class="keys-bar">
+    <button @click="sendKey('Up')" :disabled="!activeSession">↑</button>
+    <button @click="sendKey('Down')" :disabled="!activeSession">↓</button>
+    <button @click="sendKey('Enter')" :disabled="!activeSession">Enter</button>
+    <button @click="sendKey('Escape')" :disabled="!activeSession">Esc</button>
+    <button @click="sendKey('y')" :disabled="!activeSession">y</button>
+    <button @click="sendKey('n')" :disabled="!activeSession">n</button>
+    <button @click="sendKey('Tab')" :disabled="!activeSession">Tab</button>
+  </div>
+
+  <div class="input-bar">
+    <input
+      v-model="inputText"
+      @keydown.enter="sendInput"
+      placeholder="Type a message..."
+      :disabled="!activeSession"
+    />
+    <button @click="sendInput" :disabled="!activeSession || !inputText.trim()">Send</button>
+  </div>
+
+  <!-- New session modal -->
+  <div class="modal-overlay" v-if="showNewModal" @click.self="showNewModal = false">
+    <div class="modal">
+      <h2>New session</h2>
+      <input
+        v-model="newDir"
+        @keydown.enter="createSession"
+        placeholder="/path/to/project"
+        ref="newDirInput"
+      />
+      <div class="actions">
+        <button class="cancel" @click="showNewModal = false">Cancel</button>
+        <button class="confirm" @click="createSession">Create</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+  import { createApp, ref, nextTick, watch, onMounted } from 'vue'
+
+  createApp({
+    setup() {
+      const sessions = ref([])
+      const activeSession = ref(null)
+      const output = ref('')
+      const inputText = ref('')
+      const ready = ref(false)
+      const connected = ref(false)
+      const showNewModal = ref(false)
+      const newDir = ref('')
+      const outputEl = ref(null)
+      const newDirInput = ref(null)
+
+      let ws = null
+      const apiBase = window.location.origin
+
+      const statusClass = ref('status-disconnected')
+      const statusText = ref('disconnected')
+
+      function updateStatus() {
+        if (!connected.value) {
+          statusClass.value = 'status-disconnected'
+          statusText.value = 'disconnected'
+        } else if (ready.value) {
+          statusClass.value = 'status-ready'
+          statusText.value = 'ready'
+        } else {
+          statusClass.value = 'status-busy'
+          statusText.value = 'busy'
+        }
+      }
+
+      async function fetchSessions() {
+        const res = await fetch(`${apiBase}/api/sessions`)
+        sessions.value = await res.json()
+      }
+
+      function connectWS(name) {
+        if (ws) {
+          ws.close()
+          ws = null
+        }
+
+        connected.value = false
+        ready.value = false
+        output.value = ''
+        updateStatus()
+
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        ws = new WebSocket(`${proto}//${window.location.host}/ws/${name}`)
+
+        ws.onopen = () => {
+          connected.value = true
+          updateStatus()
+        }
+
+        ws.onmessage = (e) => {
+          const msg = JSON.parse(e.data)
+
+          if (msg.type === 'snapshot' || msg.type === 'update') {
+            output.value = msg.text
+            if (msg.ready !== undefined) ready.value = msg.ready
+          } else if (msg.type === 'status') {
+            ready.value = msg.ready
+          }
+
+          updateStatus()
+          nextTick(() => {
+            if (outputEl.value) {
+              outputEl.value.scrollTop = outputEl.value.scrollHeight
+            }
+          })
+        }
+
+        ws.onclose = () => {
+          connected.value = false
+          updateStatus()
+        }
+      }
+
+      function switchSession(name) {
+        activeSession.value = name
+        connectWS(name)
+      }
+
+      function sendInput() {
+        const text = inputText.value.trim()
+        if (!text || !ws) return
+        ws.send(JSON.stringify({ type: 'input', text }))
+        inputText.value = ''
+        ready.value = false
+        updateStatus()
+      }
+
+      function sendKey(key) {
+        if (!ws) return
+        ws.send(JSON.stringify({ type: 'key', text: key }))
+        ready.value = false
+        updateStatus()
+      }
+
+      async function closeSession(name) {
+        if (!confirm(`Close session "${name}"?`)) return
+        await fetch(`${apiBase}/api/sessions/${name}`, { method: 'DELETE' })
+        if (activeSession.value === name) {
+          if (ws) { ws.close(); ws = null }
+          activeSession.value = null
+          output.value = ''
+          connected.value = false
+          updateStatus()
+        }
+        await fetchSessions()
+        if (!activeSession.value && sessions.value.length > 0) {
+          switchSession(sessions.value[0].name)
+        }
+      }
+
+      async function createSession() {
+        const dir = newDir.value.trim()
+        if (!dir) return
+
+        const res = await fetch(`${apiBase}/api/sessions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dir })
+        })
+
+        if (res.ok) {
+          const s = await res.json()
+          await fetchSessions()
+          switchSession(s.name)
+          showNewModal.value = false
+          newDir.value = ''
+        }
+      }
+
+      watch(showNewModal, (v) => {
+        if (v) nextTick(() => newDirInput.value?.focus())
+      })
+
+      onMounted(() => {
+        fetchSessions().then(() => {
+          if (sessions.value.length > 0) {
+            switchSession(sessions.value[0].name)
+          }
+        })
+      })
+
+      return {
+        sessions, activeSession, output, inputText, ready, connected,
+        showNewModal, newDir, outputEl, newDirInput,
+        statusClass, statusText,
+        switchSession, sendInput, sendKey, closeSession, createSession
+      }
+    }
+  }).mount('#app')
+</script>
+
+</body>
+</html>

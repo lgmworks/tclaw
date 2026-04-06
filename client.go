@@ -57,11 +57,21 @@ func (c *Client) readPump() {
 			continue
 		}
 
-		if msg.Type == "input" && msg.Text != "" {
-			if err := c.hub.session.SendInput(msg.Text); err != nil {
-				log.Printf("send input error: %v", err)
+		switch msg.Type {
+		case "input":
+			if msg.Text != "" {
+				if err := c.hub.session.SendInput(msg.Text); err != nil {
+					log.Printf("send input error: %v", err)
+				}
+				c.hub.notifyInput()
 			}
-			c.hub.notifyInput()
+		case "key":
+			if msg.Text != "" {
+				if err := c.hub.session.SendKey(msg.Text); err != nil {
+					log.Printf("send key error: %v", err)
+				}
+				c.hub.notifyInput()
+			}
 		}
 	}
 }

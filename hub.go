@@ -136,30 +136,20 @@ func (h *Hub) pollLoop() {
 			h.session.lastSnap = snap
 			h.session.mu.Unlock()
 
-			if snap == oldSnap {
+			if !hasChanged(oldSnap, snap) {
 				continue
 			}
 
-			diff := diffCaptures(oldSnap, snap)
-
-			if len(diff.NewLines) > 0 {
-				msg := OutMessage{
-					Type:          "diff",
-					Lines:         diff.NewLines,
-					FullLineCount: diff.FullLineCount,
-				}
-				data, _ := json.Marshal(msg)
-				h.broadcast(data)
+			// Send full snapshot as replacement
+			msg := OutMessage{
+				Type: "update",
+				Text: snap,
+				Ready: isReady(snap),
 			}
+			data, _ := json.Marshal(msg)
+			h.broadcast(data)
 
-			if diff.Ready {
-				msg := OutMessage{
-					Type:  "status",
-					Ready: true,
-				}
-				data, _ := json.Marshal(msg)
-				h.broadcast(data)
-
+			if msg.Ready {
 				// Slow down polling
 				if currentInterval != pollSlow {
 					currentInterval = pollSlow
