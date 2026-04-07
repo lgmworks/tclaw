@@ -2,21 +2,45 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>tclaw</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-touch-callout: none;
+    }
+    html,
+    body {
+      height: 100%;
+      overflow: hidden;
+    }
     body {
       background: #1a1a2e;
       color: #e0e0e0;
       font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
       font-size: 14px;
-      height: 100vh;
+      height: 100dvh;
       display: flex;
       flex-direction: column;
+      touch-action: manipulation;
     }
 
-    #app { display: flex; flex-direction: column; height: 100vh; }
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100dvh;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .top-pane,
+    .bottom-pane {
+      flex: 0 0 auto;
+    }
 
     .header {
       padding: 8px 16px;
@@ -57,7 +81,9 @@
       display: flex;
       gap: 8px;
       align-items: center;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      overflow-y: hidden;
     }
     .sessions-bar button {
       background: #16213e;
@@ -68,13 +94,15 @@
       cursor: pointer;
       font-family: inherit;
       font-size: 12px;
+      touch-action: manipulation;
     }
     .sessions-bar button:hover { background: #1a1a2e; }
     .sessions-bar button.active { border-color: #e94560; color: #e94560; }
     .sessions-bar .new-btn { color: #95d5b2; border-color: #2d6a4f; }
 
     .output {
-      flex: 1;
+      flex: 1 1 auto;
+      min-height: 0;
       overflow-y: auto;
       padding: 12px 16px;
       white-space: pre-wrap;
@@ -84,13 +112,70 @@
     }
     .output:focus { box-shadow: inset 0 0 0 1px #e94560; }
     .output.disconnected { opacity: 0.7; }
-
+    .output a {
+      color: #7dd3fc;
+      text-decoration: underline;
+    }
+    .mobile-composer {
+      display: flex;
+      gap: 6px;
+      padding: 8px 10px;
+      background: #10192f;
+      border-top: 1px solid #0f3460;
+      align-items: flex-end;
+    }
+    .mobile-composer textarea {
+      flex: 1;
+      min-height: 38px;
+      max-height: 126px;
+      overflow-y: hidden;
+      resize: none;
+      border: 1px solid #0f3460;
+      border-radius: 18px;
+      background: #f8fafc;
+      color: #152238;
+      padding: 9px 12px;
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1.3;
+      outline: none;
+    }
+    .mobile-composer button {
+      height: 38px;
+      min-width: 52px;
+      border: none;
+      border-radius: 18px;
+      background: #2d6a4f;
+      color: #ffffff;
+      padding: 0 12px;
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    @media (hover: hover) and (pointer: fine) {
+      .mobile-composer,
+      .composer-toggle {
+        display: none;
+      }
+    }
+    @media (hover: none), (pointer: coarse) {
+      .output {
+        font-size: 12px;
+        line-height: 1.3;
+        padding: 8px 10px;
+        overflow-x: auto;
+        white-space: pre;
+        word-wrap: normal;
+      }
+    }
     .keys-bar {
       display: flex;
       padding: 4px 16px;
       background: #16213e;
       gap: 4px;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      overflow-y: hidden;
     }
     .arrow-pad {
       display: grid;
@@ -100,6 +185,9 @@
         "left down right";
       gap: 4px;
       align-items: center;
+    }
+    .arrow-pad button {
+      padding: 0;
     }
     .arrow-up { grid-area: up; }
     .arrow-left { grid-area: left; }
@@ -115,27 +203,50 @@
       background: #1a1a2e;
       color: #e0e0e0;
       border: 1px solid #0f3460;
-      padding: 4px 10px;
+      height: 34px;
+      padding: 0 10px;
       border-radius: 4px;
       cursor: pointer;
       font-family: inherit;
       font-size: 12px;
       min-width: 36px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      touch-action: manipulation;
+      white-space: nowrap;
     }
     .keys-bar button:hover { border-color: #e94560; color: #e94560; }
+    .keys-bar button:focus,
+    .keys-bar button:active {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      border-color: #0f3460;
+      outline: none;
+      box-shadow: none;
+    }
     .keys-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .keys-bar .composer-toggle {
+      font-size: 24px;
+      line-height: 1;
+      min-width: 48px;
+      padding: 0 10px;
+    }
     .upload-status {
       color: #95d5b2;
       font-size: 12px;
       align-self: center;
-      min-width: 96px;
-      text-align: right;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .upload-status.error { color: #ff9aa2; }
     .recording-bar {
       display: inline-flex;
       align-items: center;
       gap: 8px;
+      min-width: 0;
     }
     .recording-dot {
       width: 10px;
@@ -147,7 +258,7 @@
     .recording-time {
       color: #ffb3bd;
       font-size: 12px;
-      min-width: 40px;
+      min-width: 34px;
     }
     .recording-action.cancel {
       color: #ff9aa2;
@@ -157,6 +268,28 @@
       color: #95d5b2;
       border-color: #2d6a4f;
     }
+    .keys-bar .recording-action {
+      height: 34px;
+      padding: 0 10px;
+    }
+    .keys-bar .recording-action.send:hover,
+    .keys-bar .recording-action.send:focus,
+    .keys-bar .recording-action.send:active {
+      background: #1a1a2e;
+      color: #95d5b2;
+      border-color: #2d6a4f;
+      outline: none;
+      box-shadow: none;
+    }
+    .keys-bar .recording-action.cancel:hover,
+    .keys-bar .recording-action.cancel:focus,
+    .keys-bar .recording-action.cancel:active {
+      background: #1a1a2e;
+      color: #ff9aa2;
+      border-color: #7f1d2d;
+      outline: none;
+      box-shadow: none;
+    }
 
     .modal-overlay {
       position: fixed;
@@ -165,13 +298,15 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      padding: 16px;
     }
     .modal {
       background: #16213e;
       border: 1px solid #0f3460;
       border-radius: 8px;
       padding: 24px;
-      min-width: 400px;
+      width: min(400px, 100%);
+      max-width: 100%;
     }
     .modal h2 { margin-bottom: 16px; color: #e94560; font-size: 16px; }
     .modal input {
@@ -202,6 +337,17 @@
     }
     .modal .actions .cancel { background: #6c757d; color: white; }
     .modal .actions .confirm { background: #e94560; color: white; }
+    @media (max-width: 420px) {
+      .modal {
+        padding: 16px;
+      }
+      .modal .actions {
+        justify-content: stretch;
+      }
+      .modal .actions button {
+        flex: 1;
+      }
+    }
   </style>
 </head>
 <body>
@@ -215,31 +361,34 @@
 </script>
 
 <div id="app">
-  <div class="header">
-    <h1>tclaw</h1>
-    <div class="controls">
-      <span class="session-name" v-if="activeSession">{{ activeSession }}</span>
-      <select v-model="harness" @change="saveHarness">
-        <option value="claude">claude</option>
-        <option value="codex">codex</option>
-      </select>
-      <span class="status" :class="statusClass">{{ statusText }}</span>
+  <div class="top-pane">
+    <div class="header">
+      <h1>tclaw</h1>
+      <div class="controls">
+        <span class="session-name" v-if="activeSession">{{ activeSession }}</span>
+        <select v-model="harness" @change="saveHarness">
+          <option value="claude">claude</option>
+          <option value="codex">codex</option>
+        </select>
+        <!-- TODO: move keyboard language settings into a dedicated config view. -->
+        <span class="status" :class="statusClass">{{ statusText }}</span>
+      </div>
     </div>
-  </div>
 
-  <div class="sessions-bar">
-    <span v-for="s in sessions" :key="s.name" style="display:inline-flex;align-items:center;gap:2px;">
-      <button
-        :class="{ active: s.name === activeSession }"
-        @click="switchSession(s.name)"
-      >{{ s.name }}</button>
-      <button
-        style="padding:4px 6px;color:#e94560;background:none;border:none;cursor:pointer;font-size:14px;"
-        @click.stop="closeSession(s.name)"
-        title="Close session"
-      >&times;</button>
-    </span>
-    <button class="new-btn" @click="showNewModal = true">+ new</button>
+    <div class="sessions-bar">
+      <span v-for="s in sessions" :key="s.name" style="display:inline-flex;align-items:center;gap:2px;">
+        <button
+          :class="{ active: s.name === activeSession }"
+          @click="switchSession(s.name)"
+        >{{ s.name }}</button>
+        <button
+          style="padding:4px 6px;color:#e94560;background:none;border:none;cursor:pointer;font-size:14px;"
+          @click.stop="closeSession(s.name)"
+          title="Close session"
+        >&times;</button>
+      </span>
+      <button class="new-btn" @click="showNewModal = true">+ new</button>
+    </div>
   </div>
 
   <div
@@ -248,32 +397,53 @@
     ref="outputEl"
     tabindex="0"
     @click="focusTerminal"
-  >{{ output }}</div>
+  ><template v-for="(segment, index) in outputSegments" :key="index"><a v-if="segment.type === 'link'" :href="segment.text" target="_blank" rel="noreferrer">{{ segment.text }}</a><span v-else>{{ segment.text }}</span></template></div>
 
-  <div class="keys-bar">
-    <div class="arrow-pad">
-      <button class="arrow-up" @click="sendKey('Up')" :disabled="!activeSession">↑</button>
-      <button class="arrow-left" @click="sendKey('Left')" :disabled="!activeSession">←</button>
-      <button class="arrow-down" @click="sendKey('Down')" :disabled="!activeSession">↓</button>
-      <button class="arrow-right" @click="sendKey('Right')" :disabled="!activeSession">→</button>
+  <div class="bottom-pane">
+    <div class="mobile-composer" v-show="showMobileComposer">
+      <textarea
+        ref="mobileComposerEl"
+        v-model="mobileComposerText"
+        rows="1"
+        placeholder="Message"
+        @input="resizeMobileComposer"
+      ></textarea>
+      <button @click="sendMobileComposer" :disabled="!mobileComposerText.trim() || !activeSession">Send</button>
     </div>
-    <button @click="sendKey('Enter')" :disabled="!activeSession">Enter</button>
-    <button @click="sendKey('Escape')" :disabled="!activeSession">Esc</button>
-    <button @click="sendKey('y')" :disabled="!activeSession">y</button>
-    <button @click="sendKey('n')" :disabled="!activeSession">n</button>
-    <button @click="sendKey('Tab')" :disabled="!activeSession">Tab</button>
-    <button @click="triggerImageUpload" :disabled="!activeSession || uploadInProgress">Image</button>
-    <button v-if="!isRecording" @click="startVoiceRecording" :disabled="!activeSession || uploadInProgress">Mic</button>
-    <span class="recording-bar" v-else>
-      <span class="recording-dot"></span>
-      <span class="recording-time">{{ recordingDurationText }}</span>
-      <button class="recording-action cancel" @click="cancelVoiceRecording">Cancel</button>
-      <button class="recording-action send" @click="finishVoiceRecording">Send</button>
-    </span>
-    <input ref="imageInputEl" type="file" accept="image/*" style="display:none" @change="handleImageSelected" />
-    <span class="upload-status" :class="{ error: uploadError }">{{ uploadStatusText }}</span>
-    <span class="spacer"></span>
-    <span class="hint">click terminal and type directly</span>
+
+    <div class="keys-bar">
+      <template v-if="isRecording">
+        <span class="recording-bar">
+          <span class="recording-dot"></span>
+          <span class="recording-time">{{ recordingDurationText }}</span>
+          <button class="recording-action cancel" @click="cancelVoiceRecording">Cancel</button>
+          <button class="recording-action send" @click="finishVoiceRecording">Send</button>
+        </span>
+      </template>
+      <template v-else>
+        <button @click="toggleActionSet">⇄</button>
+        <template v-if="actionSet === 'main'">
+          <button @click="sendInput('/clear')" :disabled="!activeSession">Clear</button>
+          <button @click="triggerImageUpload" :disabled="!activeSession || uploadInProgress">Img</button>
+          <button @click="startVoiceRecording" :disabled="!activeSession || uploadInProgress">Mic</button>
+          <button class="composer-toggle" @click="toggleMobileComposer" title="Keyboard">
+            ⌨
+          </button>
+        </template>
+        <template v-else>
+          <span class="arrow-pad">
+            <button class="arrow-up" @click="sendKey('Up')" :disabled="!activeSession">↑</button>
+            <button class="arrow-left" @click="sendKey('Left')" :disabled="!activeSession">←</button>
+            <button class="arrow-down" @click="sendKey('Down')" :disabled="!activeSession">↓</button>
+            <button class="arrow-right" @click="sendKey('Right')" :disabled="!activeSession">→</button>
+          </span>
+          <button @click="sendKey('Enter')" :disabled="!activeSession">↵</button>
+          <button @click="sendKey('C-c')" :disabled="!activeSession">C-c</button>
+        </template>
+      </template>
+      <input ref="imageInputEl" type="file" accept="image/*" style="display:none" @change="handleImageSelected" />
+      <span class="upload-status" :class="{ error: uploadError }">{{ uploadStatusText }}</span>
+    </div>
   </div>
 
   <!-- New session modal -->
@@ -314,13 +484,18 @@
       const uploadError = ref('')
       const isRecording = ref(false)
       const recordingSeconds = ref(0)
+      const showMobileComposer = ref(false)
+      const mobileComposerText = ref('')
+      const actionSet = ref('main')
       const outputEl = ref(null)
+      const mobileComposerEl = ref(null)
       const newDirInput = ref(null)
       const imageInputEl = ref(null)
 
       let ws = null
       let mediaRecorder = null
       let recordingStream = null
+      let micStream = null
       let recordingChunks = []
       let recordingTimer = null
       const apiBase = window.location.origin
@@ -354,14 +529,19 @@
       }
 
       async function saveHarness() {
+        await saveConfig()
+      }
+
+      async function saveConfig() {
         const res = await fetch(`${apiBase}/api/config`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ harness: harness.value })
         })
-        if (!res.ok) return
+        if (!res.ok) return null
         const cfg = await res.json()
         harness.value = cfg.harness || 'claude'
+        return cfg
       }
 
       function connectWS(name) {
@@ -467,6 +647,11 @@
         )
       }
 
+      function hasSelectionToCopy() {
+        const selection = window.getSelection()
+        return !!selection && selection.toString().length > 0
+      }
+
       function handleGlobalKeydown(event) {
         if (!ws || !activeSession.value || !connected.value) return
 
@@ -476,6 +661,11 @@
         if (target === newDirInput.value) return
 
         if (target?.isContentEditable || tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT') {
+          return
+        }
+
+        const lowerKey = event.key.toLowerCase()
+        if ((event.metaKey || event.ctrlKey) && lowerKey === 'c' && hasSelectionToCopy()) {
           return
         }
 
@@ -498,11 +688,27 @@
         updateStatus()
       }
 
+      function sendCommand(text) {
+        if (!text || !ws) return
+        ws.send(JSON.stringify({ type: 'input', text, submit_key: 'Enter' }))
+        ready.value = false
+        updateStatus()
+      }
+
+      function sendInput(text, submitKey = 'Enter') {
+        if (!text || !ws) return
+        ws.send(JSON.stringify({ type: 'input', text, submit_key: submitKey }))
+        ready.value = false
+        updateStatus()
+      }
+
       const uploadStatusText = computed(() => {
         if (uploadError.value) return uploadError.value
         if (uploadInProgress.value) return `${uploadProgress.value}%`
         return ''
       })
+
+      const outputSegments = computed(() => linkifyOutput(output.value))
 
       const recordingDurationText = computed(() => {
         const minutes = Math.floor(recordingSeconds.value / 60)
@@ -510,11 +716,69 @@
         return `${minutes}:${String(seconds).padStart(2, '0')}`
       })
 
+      function linkifyOutput(text) {
+        const pattern = /(https?:\/\/[^\s]+)/g
+        const segments = []
+        let lastIndex = 0
+
+        for (const match of text.matchAll(pattern)) {
+          const index = match.index ?? 0
+          if (index > lastIndex) {
+            segments.push({ type: 'text', text: text.slice(lastIndex, index) })
+          }
+          segments.push({ type: 'link', text: match[0] })
+          lastIndex = index + match[0].length
+        }
+
+        if (lastIndex < text.length) {
+          segments.push({ type: 'text', text: text.slice(lastIndex) })
+        }
+
+        if (segments.length === 0) {
+          segments.push({ type: 'text', text })
+        }
+
+        return segments
+      }
+
       function sendKey(key) {
         if (!key || !ws) return
         ws.send(JSON.stringify({ type: 'key', text: key }))
         ready.value = false
         updateStatus()
+      }
+
+      function toggleMobileComposer() {
+        showMobileComposer.value = !showMobileComposer.value
+        if (showMobileComposer.value) {
+          nextTick(() => {
+            resizeMobileComposer()
+            mobileComposerEl.value?.focus()
+          })
+        }
+      }
+
+      function resizeMobileComposer() {
+        const el = mobileComposerEl.value
+        if (!el) return
+        el.style.height = 'auto'
+        el.style.height = `${Math.min(el.scrollHeight, 126)}px`
+        el.style.overflowY = el.scrollHeight > 126 ? 'auto' : 'hidden'
+      }
+
+      function toggleActionSet() {
+        actionSet.value = actionSet.value === 'main' ? 'nav' : 'main'
+      }
+
+      function sendMobileComposer() {
+        const text = mobileComposerText.value.trim()
+        if (!text || !activeSession.value) return
+        sendInput(text)
+        mobileComposerText.value = ''
+        nextTick(() => {
+          resizeMobileComposer()
+          mobileComposerEl.value?.focus()
+        })
       }
 
       async function closeSession(name) {
@@ -619,7 +883,7 @@
             const data = JSON.parse(xhr.responseText)
             uploadProgress.value = 100
             if (data.transcript) {
-              sendText(`<transcript>${data.transcript}</transcript>`)
+              sendInput(`<transcript>${data.transcript}</transcript>`)
             } else {
               sendText(`@${data.full_path} `)
             }
@@ -663,12 +927,22 @@
       }
 
       function stopRecordingStream() {
-        if (recordingStream) {
+        if (recordingStream && recordingStream !== micStream) {
           for (const track of recordingStream.getTracks()) {
             track.stop()
           }
-          recordingStream = null
         }
+        recordingStream = null
+      }
+
+      function stopMicStream() {
+        if (micStream) {
+          for (const track of micStream.getTracks()) {
+            track.stop()
+          }
+          micStream = null
+        }
+        recordingStream = null
       }
 
       function cleanupRecorder() {
@@ -676,15 +950,53 @@
         stopRecordingStream()
         mediaRecorder = null
         recordingChunks = []
+        recordingSeconds.value = 0
+      }
+
+      async function getMicStream() {
+        if (micStream && micStream.getAudioTracks().some((track) => track.readyState === 'live')) {
+          return micStream
+        }
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        return micStream
+      }
+
+      function microphoneErrorMessage(err) {
+        if (!window.isSecureContext) {
+          return 'Mic requires HTTPS or localhost'
+        }
+        if (!navigator.mediaDevices?.getUserMedia) {
+          return 'Microphone is not supported here'
+        }
+        if (!window.MediaRecorder) {
+          return 'Audio recording is not supported here'
+        }
+        if (err?.name === 'NotAllowedError' || err?.name === 'SecurityError') {
+          return 'Microphone permission denied'
+        }
+        if (err?.name === 'NotFoundError' || err?.name === 'DevicesNotFoundError') {
+          return 'No microphone found'
+        }
+        if (err?.name === 'NotReadableError' || err?.name === 'TrackStartError') {
+          return 'Microphone is busy'
+        }
+        return err?.message || 'Could not start microphone'
       }
 
       async function startVoiceRecording() {
         if (isRecording.value || uploadInProgress.value) return
 
         uploadError.value = ''
+        isRecording.value = false
+
+        if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+          uploadError.value = microphoneErrorMessage()
+          cleanupRecorder()
+          return
+        }
 
         try {
-          recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+          recordingStream = await getMicStream()
           const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
             ? 'audio/webm;codecs=opus'
             : 'audio/webm'
@@ -708,14 +1020,19 @@
           mediaRecorder.start()
           isRecording.value = true
           startRecordingTimer()
-        } catch {
-          uploadError.value = 'Microphone permission denied'
+        } catch (err) {
+          isRecording.value = false
+          uploadError.value = microphoneErrorMessage(err)
           cleanupRecorder()
         }
       }
 
       function cancelVoiceRecording() {
-        if (!mediaRecorder) return
+        if (!mediaRecorder) {
+          isRecording.value = false
+          cleanupRecorder()
+          return
+        }
         const recorder = mediaRecorder
         recorder.onstop = null
         if (recorder.state !== 'inactive') {
@@ -726,7 +1043,11 @@
       }
 
       function finishVoiceRecording() {
-        if (!mediaRecorder) return
+        if (!mediaRecorder) {
+          isRecording.value = false
+          cleanupRecorder()
+          return
+        }
 
         const recorder = mediaRecorder
         recorder.onstop = () => {
@@ -758,13 +1079,14 @@
       onBeforeUnmount(() => {
         window.removeEventListener('keydown', handleGlobalKeydown, true)
         cancelVoiceRecording()
+        stopMicStream()
       })
 
       return {
-        sessions, activeSession, output, ready, connected, harness,
-        showNewModal, newDir, newSessionError, uploadProgress, uploadInProgress, uploadError, uploadStatusText, isRecording, recordingDurationText, outputEl, newDirInput, imageInputEl,
+        sessions, activeSession, output, outputSegments, ready, connected, harness,
+        showNewModal, newDir, newSessionError, uploadProgress, uploadInProgress, uploadError, uploadStatusText, isRecording, recordingDurationText, showMobileComposer, mobileComposerText, actionSet, outputEl, mobileComposerEl, newDirInput, imageInputEl,
         statusClass, statusText,
-        switchSession, sendKey, sendText, closeSession, createSession, focusTerminal, triggerImageUpload, handleImageSelected, startVoiceRecording, cancelVoiceRecording, finishVoiceRecording, saveHarness
+        switchSession, sendKey, sendText, sendCommand, sendInput, closeSession, createSession, focusTerminal, triggerImageUpload, handleImageSelected, startVoiceRecording, cancelVoiceRecording, finishVoiceRecording, saveHarness, toggleMobileComposer, resizeMobileComposer, toggleActionSet, sendMobileComposer
       }
     }
   }).mount('#app')

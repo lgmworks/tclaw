@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"golang.org/x/text/unicode/norm"
@@ -116,6 +117,34 @@ func resolveDir(dir string) (string, error) {
 	return abs, nil
 }
 
+func harnessCommandParts() []string {
+	harness := getConfig().Harness
+
+	switch harness {
+	case "codex":
+		return []string{"codex", "--dangerously-bypass-approvals-and-sandbox"}
+	case "claude":
+		fallthrough
+	default:
+		return []string{"claude", "--dangerously-skip-permissions"}
+	}
+}
+
+func tmuxKeysForCommand(parts []string) []string {
+	if len(parts) == 0 {
+		return nil
+	}
+
+	keys := make([]string, 0, len(parts)*2-1)
+	for i, part := range parts {
+		if i > 0 {
+			keys = append(keys, "Space")
+		}
+		keys = append(keys, part)
+	}
+	return keys
+}
+
 func createSession(dir string) (*Session, error) {
 	absDir, err := resolveDir(dir)
 	if err != nil {
@@ -138,8 +167,9 @@ func createSession(dir string) (*Session, error) {
 	}
 
 	// Start the configured harness inside the session.
-	harness := getConfig().Harness
-	cmd = exec.Command("tmux", "send-keys", "-t", name, harness, "Enter")
+	args := append([]string{"send-keys", "-t", name}, tmuxKeysForCommand(harnessCommandParts())...)
+	args = append(args, "Enter")
+	cmd = exec.Command("tmux", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("tmux send-keys harness: %s: %w", string(out), err)
 	}
@@ -189,9 +219,10 @@ func deleteSession(name string) error {
 
 func (s *Session) SendInput(text, submitKey string) error {
 	if text != "" {
-		if err := s.SendText(text); err != nil {
+		if err := s.PasteText(text); err != nil {
 			return err
 		}
+		time.Sleep(300 * time.Millisecond)
 	}
 
 	if submitKey == "" {
@@ -202,6 +233,22 @@ func (s *Session) SendInput(text, submitKey string) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux send-keys submit key: %s: %w", string(out), err)
 	}
+	return nil
+}
+
+func (s *Session) PasteText(text string) error {
+	bufferName := "tclaw-input"
+
+	setCmd := exec.Command("tmux", "set-buffer", "-b", bufferName, "--", text)
+	if out, err := setCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux set-buffer: %s: %w", string(out), err)
+	}
+
+	pasteCmd := exec.Command("tmux", "paste-buffer", "-b", bufferName, "-t", s.Name)
+	if out, err := pasteCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux paste-buffer: %s: %w", string(out), err)
+	}
+
 	return nil
 }
 
