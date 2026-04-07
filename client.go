@@ -16,8 +16,9 @@ var upgrader = websocket.Upgrader{
 
 // InMessage is what the browser sends.
 type InMessage struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type      string `json:"type"`
+	Text      string `json:"text"`
+	SubmitKey string `json:"submit_key,omitempty"`
 }
 
 // OutMessage is what tclaw sends to the browser.
@@ -58,9 +59,16 @@ func (c *Client) readPump() {
 		}
 
 		switch msg.Type {
+		case "text":
+			if msg.Text != "" {
+				if err := c.hub.session.SendText(msg.Text); err != nil {
+					log.Printf("send text error: %v", err)
+				}
+				c.hub.notifyInput()
+			}
 		case "input":
 			if msg.Text != "" {
-				if err := c.hub.session.SendInput(msg.Text); err != nil {
+				if err := c.hub.session.SendInput(msg.Text, msg.SubmitKey); err != nil {
 					log.Printf("send input error: %v", err)
 				}
 				c.hub.notifyInput()

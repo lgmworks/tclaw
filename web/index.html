@@ -66,38 +66,10 @@
       white-space: pre-wrap;
       word-wrap: break-word;
       line-height: 1.4;
-    }
-
-    .input-bar {
-      display: flex;
-      padding: 8px 16px;
-      background: #16213e;
-      border-top: 1px solid #0f3460;
-      gap: 8px;
-    }
-    .input-bar input {
-      flex: 1;
-      background: #1a1a2e;
-      color: #e0e0e0;
-      border: 1px solid #0f3460;
-      padding: 8px 12px;
-      border-radius: 4px;
-      font-family: inherit;
-      font-size: 14px;
       outline: none;
     }
-    .input-bar input:focus { border-color: #e94560; }
-    .input-bar button {
-      background: #e94560;
-      color: white;
-      border: none;
-      padding: 8px 20px;
-      border-radius: 4px;
-      cursor: pointer;
-      font-family: inherit;
-      font-weight: bold;
-    }
-    .input-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .output:focus { box-shadow: inset 0 0 0 1px #e94560; }
+    .output.disconnected { opacity: 0.7; }
 
     .keys-bar {
       display: flex;
@@ -105,6 +77,12 @@
       background: #16213e;
       gap: 4px;
       flex-wrap: wrap;
+    }
+    .keys-bar .hint {
+      margin-left: auto;
+      color: #53a8b6;
+      font-size: 12px;
+      align-self: center;
     }
     .keys-bar button {
       background: #1a1a2e;
@@ -192,26 +170,25 @@
     <button class="new-btn" @click="showNewModal = true">+ new</button>
   </div>
 
-  <div class="output" ref="outputEl">{{ output }}</div>
+  <div
+    class="output"
+    :class="{ disconnected: !connected }"
+    ref="outputEl"
+    tabindex="0"
+    @click="focusTerminal"
+  >{{ output }}</div>
 
   <div class="keys-bar">
     <button @click="sendKey('Up')" :disabled="!activeSession">↑</button>
     <button @click="sendKey('Down')" :disabled="!activeSession">↓</button>
+    <button @click="sendKey('Left')" :disabled="!activeSession">←</button>
+    <button @click="sendKey('Right')" :disabled="!activeSession">→</button>
     <button @click="sendKey('Enter')" :disabled="!activeSession">Enter</button>
     <button @click="sendKey('Escape')" :disabled="!activeSession">Esc</button>
     <button @click="sendKey('y')" :disabled="!activeSession">y</button>
     <button @click="sendKey('n')" :disabled="!activeSession">n</button>
     <button @click="sendKey('Tab')" :disabled="!activeSession">Tab</button>
-  </div>
-
-  <div class="input-bar">
-    <input
-      v-model="inputText"
-      @keydown.enter="sendInput"
-      placeholder="Type a message..."
-      :disabled="!activeSession"
-    />
-    <button @click="sendInput" :disabled="!activeSession || !inputText.trim()">Send</button>
+    <span class="hint">click terminal and type directly</span>
   </div>
 
   <!-- New session modal -->
@@ -233,14 +210,13 @@
 </div>
 
 <script type="module">
-  import { createApp, ref, nextTick, watch, onMounted } from 'vue'
+  import { createApp, ref, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
 
   createApp({
     setup() {
       const sessions = ref([])
       const activeSession = ref(null)
       const output = ref('')
-      const inputText = ref('')
       const ready = ref(false)
       const connected = ref(false)
       const showNewModal = ref(false)
@@ -289,6 +265,7 @@
         ws.onopen = () => {
           connected.value = true
           updateStatus()
+          nextTick(() => focusTerminal())
         }
 
         ws.onmessage = (e) => {
@@ -320,17 +297,83 @@
         connectWS(name)
       }
 
-      function sendInput() {
-        const text = inputText.value.trim()
+      function focusTerminal() {
+        outputEl.value?.focus()
+      }
+
+      function normalizeKeyName(key) {
+        if (key === 'ArrowUp') return 'Up'
+        if (key === 'ArrowDown') return 'Down'
+        if (key === 'ArrowLeft') return 'Left'
+        if (key === 'ArrowRight') return 'Right'
+        if (key === 'Backspace') return 'BSpace'
+        if (key === 'Delete') return 'Delete'
+        if (key === 'Control' || key === 'Shift' || key === 'Alt' || key === 'Meta') return ''
+        if (key === 'Esc') return 'Escape'
+        if (key === ' ') return 'Space'
+        if (key.length === 1) return key.toLowerCase()
+        return key
+      }
+
+      function toTmuxKey(event) {
+        const parts = []
+        if (event.ctrlKey) parts.push('C')
+        if (event.altKey || event.metaKey) parts.push('M')
+        if (event.shiftKey) parts.push('S')
+
+        const key = normalizeKeyName(event.key)
+        if (!key) return ''
+        return parts.length ? `${parts.join('-')}-${key}` : key
+      }
+
+      function shouldHandleCombo(event) {
+        const key = event.key
+        return (
+          key === 'Backspace' ||
+          key === 'Delete' ||
+          event.ctrlKey ||
+          event.altKey ||
+          event.metaKey ||
+          key === 'Enter' ||
+          key === 'Tab' ||
+          key === 'Escape' ||
+          key.startsWith('Arrow')
+        )
+      }
+
+      function handleGlobalKeydown(event) {
+        if (!ws || !activeSession.value || !connected.value) return
+
+        const target = event.target
+        const tagName = target?.tagName
+
+        if (target === newDirInput.value) return
+
+        if (target?.isContentEditable || tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT') {
+          return
+        }
+
+        if (event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
+          event.preventDefault()
+          sendText(event.key)
+          return
+        }
+
+        if (!shouldHandleCombo(event)) return
+
+        event.preventDefault()
+        sendKey(toTmuxKey(event))
+      }
+
+      function sendText(text) {
         if (!text || !ws) return
-        ws.send(JSON.stringify({ type: 'input', text }))
-        inputText.value = ''
+        ws.send(JSON.stringify({ type: 'text', text }))
         ready.value = false
         updateStatus()
       }
 
       function sendKey(key) {
-        if (!ws) return
+        if (!key || !ws) return
         ws.send(JSON.stringify({ type: 'key', text: key }))
         ready.value = false
         updateStatus()
@@ -376,18 +419,24 @@
       })
 
       onMounted(() => {
+        window.addEventListener('keydown', handleGlobalKeydown, true)
         fetchSessions().then(() => {
           if (sessions.value.length > 0) {
             switchSession(sessions.value[0].name)
           }
         })
+        nextTick(() => focusTerminal())
+      })
+
+      onBeforeUnmount(() => {
+        window.removeEventListener('keydown', handleGlobalKeydown, true)
       })
 
       return {
-        sessions, activeSession, output, inputText, ready, connected,
+        sessions, activeSession, output, ready, connected,
         showNewModal, newDir, outputEl, newDirInput,
         statusClass, statusText,
-        switchSession, sendInput, sendKey, closeSession, createSession
+        switchSession, sendKey, sendText, closeSession, createSession, focusTerminal
       }
     }
   }).mount('#app')

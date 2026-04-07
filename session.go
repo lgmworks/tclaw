@@ -186,10 +186,28 @@ func deleteSession(name string) error {
 	return nil
 }
 
-func (s *Session) SendInput(text string) error {
-	cmd := exec.Command("tmux", "send-keys", "-t", s.Name, text, "Enter")
+func (s *Session) SendInput(text, submitKey string) error {
+	if text != "" {
+		if err := s.SendText(text); err != nil {
+			return err
+		}
+	}
+
+	if submitKey == "" {
+		submitKey = "Enter"
+	}
+
+	cmd := exec.Command("tmux", "send-keys", "-t", s.Name, submitKey)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys: %s: %w", string(out), err)
+		return fmt.Errorf("tmux send-keys submit key: %s: %w", string(out), err)
+	}
+	return nil
+}
+
+func (s *Session) SendText(text string) error {
+	cmd := exec.Command("tmux", "send-keys", "-t", s.Name, "-l", text)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux send-keys text: %s: %w", string(out), err)
 	}
 	return nil
 }
