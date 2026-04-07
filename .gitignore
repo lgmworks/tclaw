@@ -1,1 +1,5 @@
 tclaw
+.DS_Store
+.env
+config.json
+uploads/

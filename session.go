@@ -137,10 +137,11 @@ func createSession(dir string) (*Session, error) {
 		return nil, fmt.Errorf("tmux new-session: %s: %w", string(out), err)
 	}
 
-	// Start claude inside the session
-	cmd = exec.Command("tmux", "send-keys", "-t", name, "claude", "Enter")
+	// Start the configured harness inside the session.
+	harness := getConfig().Harness
+	cmd = exec.Command("tmux", "send-keys", "-t", name, harness, "Enter")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("tmux send-keys claude: %s: %w", string(out), err)
+		return nil, fmt.Errorf("tmux send-keys harness: %s: %w", string(out), err)
 	}
 
 	s := &Session{Name: name, Dir: absDir}

@@ -28,6 +28,20 @@
     }
     .header h1 { font-size: 16px; color: #e94560; }
     .header .session-name { color: #53a8b6; font-size: 13px; }
+    .header .controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .header select {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-family: inherit;
+      font-size: 12px;
+    }
     .header .status {
       font-size: 12px;
       padding: 2px 8px;
@@ -78,12 +92,25 @@
       gap: 4px;
       flex-wrap: wrap;
     }
+    .arrow-pad {
+      display: grid;
+      grid-template-columns: repeat(3, 36px);
+      grid-template-areas:
+        ". up ."
+        "left down right";
+      gap: 4px;
+      align-items: center;
+    }
+    .arrow-up { grid-area: up; }
+    .arrow-left { grid-area: left; }
+    .arrow-down { grid-area: down; }
+    .arrow-right { grid-area: right; }
     .keys-bar .hint {
-      margin-left: auto;
       color: #53a8b6;
       font-size: 12px;
       align-self: center;
     }
+    .keys-bar .spacer { flex: 1; }
     .keys-bar button {
       background: #1a1a2e;
       color: #e0e0e0;
@@ -97,6 +124,39 @@
     }
     .keys-bar button:hover { border-color: #e94560; color: #e94560; }
     .keys-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .upload-status {
+      color: #95d5b2;
+      font-size: 12px;
+      align-self: center;
+      min-width: 96px;
+      text-align: right;
+    }
+    .upload-status.error { color: #ff9aa2; }
+    .recording-bar {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .recording-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #e94560;
+      box-shadow: 0 0 0 4px rgba(233,69,96,0.16);
+    }
+    .recording-time {
+      color: #ffb3bd;
+      font-size: 12px;
+      min-width: 40px;
+    }
+    .recording-action.cancel {
+      color: #ff9aa2;
+      border-color: #7f1d2d;
+    }
+    .recording-action.send {
+      color: #95d5b2;
+      border-color: #2d6a4f;
+    }
 
     .modal-overlay {
       position: fixed;
@@ -126,6 +186,12 @@
       margin-bottom: 16px;
       outline: none;
     }
+    .modal .error {
+      color: #ff9aa2;
+      font-size: 12px;
+      margin-top: -8px;
+      margin-bottom: 12px;
+    }
     .modal .actions { display: flex; gap: 8px; justify-content: flex-end; }
     .modal .actions button {
       padding: 6px 16px;
@@ -151,8 +217,14 @@
 <div id="app">
   <div class="header">
     <h1>tclaw</h1>
-    <span class="session-name" v-if="activeSession">{{ activeSession }}</span>
-    <span class="status" :class="statusClass">{{ statusText }}</span>
+    <div class="controls">
+      <span class="session-name" v-if="activeSession">{{ activeSession }}</span>
+      <select v-model="harness" @change="saveHarness">
+        <option value="claude">claude</option>
+        <option value="codex">codex</option>
+      </select>
+      <span class="status" :class="statusClass">{{ statusText }}</span>
+    </div>
   </div>
 
   <div class="sessions-bar">
@@ -179,15 +251,28 @@
   >{{ output }}</div>
 
   <div class="keys-bar">
-    <button @click="sendKey('Up')" :disabled="!activeSession">↑</button>
-    <button @click="sendKey('Down')" :disabled="!activeSession">↓</button>
-    <button @click="sendKey('Left')" :disabled="!activeSession">←</button>
-    <button @click="sendKey('Right')" :disabled="!activeSession">→</button>
+    <div class="arrow-pad">
+      <button class="arrow-up" @click="sendKey('Up')" :disabled="!activeSession">↑</button>
+      <button class="arrow-left" @click="sendKey('Left')" :disabled="!activeSession">←</button>
+      <button class="arrow-down" @click="sendKey('Down')" :disabled="!activeSession">↓</button>
+      <button class="arrow-right" @click="sendKey('Right')" :disabled="!activeSession">→</button>
+    </div>
     <button @click="sendKey('Enter')" :disabled="!activeSession">Enter</button>
     <button @click="sendKey('Escape')" :disabled="!activeSession">Esc</button>
     <button @click="sendKey('y')" :disabled="!activeSession">y</button>
     <button @click="sendKey('n')" :disabled="!activeSession">n</button>
     <button @click="sendKey('Tab')" :disabled="!activeSession">Tab</button>
+    <button @click="triggerImageUpload" :disabled="!activeSession || uploadInProgress">Image</button>
+    <button v-if="!isRecording" @click="startVoiceRecording" :disabled="!activeSession || uploadInProgress">Mic</button>
+    <span class="recording-bar" v-else>
+      <span class="recording-dot"></span>
+      <span class="recording-time">{{ recordingDurationText }}</span>
+      <button class="recording-action cancel" @click="cancelVoiceRecording">Cancel</button>
+      <button class="recording-action send" @click="finishVoiceRecording">Send</button>
+    </span>
+    <input ref="imageInputEl" type="file" accept="image/*" style="display:none" @change="handleImageSelected" />
+    <span class="upload-status" :class="{ error: uploadError }">{{ uploadStatusText }}</span>
+    <span class="spacer"></span>
     <span class="hint">click terminal and type directly</span>
   </div>
 
@@ -201,6 +286,7 @@
         placeholder="/path/to/project"
         ref="newDirInput"
       />
+      <div class="error" v-if="newSessionError">{{ newSessionError }}</div>
       <div class="actions">
         <button class="cancel" @click="showNewModal = false">Cancel</button>
         <button class="confirm" @click="createSession">Create</button>
@@ -210,7 +296,7 @@
 </div>
 
 <script type="module">
-  import { createApp, ref, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
+  import { createApp, computed, ref, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
 
   createApp({
     setup() {
@@ -219,12 +305,24 @@
       const output = ref('')
       const ready = ref(false)
       const connected = ref(false)
+      const harness = ref('claude')
       const showNewModal = ref(false)
       const newDir = ref('')
+      const newSessionError = ref('')
+      const uploadProgress = ref(0)
+      const uploadInProgress = ref(false)
+      const uploadError = ref('')
+      const isRecording = ref(false)
+      const recordingSeconds = ref(0)
       const outputEl = ref(null)
       const newDirInput = ref(null)
+      const imageInputEl = ref(null)
 
       let ws = null
+      let mediaRecorder = null
+      let recordingStream = null
+      let recordingChunks = []
+      let recordingTimer = null
       const apiBase = window.location.origin
 
       const statusClass = ref('status-disconnected')
@@ -246,6 +344,24 @@
       async function fetchSessions() {
         const res = await fetch(`${apiBase}/api/sessions`)
         sessions.value = await res.json()
+      }
+
+      async function fetchConfig() {
+        const res = await fetch(`${apiBase}/api/config`)
+        if (!res.ok) return
+        const cfg = await res.json()
+        harness.value = cfg.harness || 'claude'
+      }
+
+      async function saveHarness() {
+        const res = await fetch(`${apiBase}/api/config`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ harness: harness.value })
+        })
+        if (!res.ok) return
+        const cfg = await res.json()
+        harness.value = cfg.harness || 'claude'
       }
 
       function connectWS(name) {
@@ -299,6 +415,16 @@
 
       function focusTerminal() {
         outputEl.value?.focus()
+      }
+
+      function sanitizeSessionName(dir) {
+        let s = dir.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        s = s.replace(/[\/\\ ]/g, '-')
+        s = s.replace(/[^a-zA-Z0-9-]/g, '')
+        s = s.replace(/-{2,}/g, '-')
+        s = s.replace(/^-+|-+$/g, '')
+        s = s.toLowerCase()
+        return s || 'session'
       }
 
       function normalizeKeyName(key) {
@@ -372,6 +498,18 @@
         updateStatus()
       }
 
+      const uploadStatusText = computed(() => {
+        if (uploadError.value) return uploadError.value
+        if (uploadInProgress.value) return `${uploadProgress.value}%`
+        return ''
+      })
+
+      const recordingDurationText = computed(() => {
+        const minutes = Math.floor(recordingSeconds.value / 60)
+        const seconds = recordingSeconds.value % 60
+        return `${minutes}:${String(seconds).padStart(2, '0')}`
+      })
+
       function sendKey(key) {
         if (!key || !ws) return
         ws.send(JSON.stringify({ type: 'key', text: key }))
@@ -398,6 +536,7 @@
       async function createSession() {
         const dir = newDir.value.trim()
         if (!dir) return
+        newSessionError.value = ''
 
         const res = await fetch(`${apiBase}/api/sessions`, {
           method: 'POST',
@@ -411,15 +550,203 @@
           switchSession(s.name)
           showNewModal.value = false
           newDir.value = ''
+          newSessionError.value = ''
+          return
         }
+
+        const errorText = (await res.text()).trim() || 'Could not create session'
+        await fetchSessions()
+
+        if (res.status === 409) {
+          const existingName = sanitizeSessionName(dir)
+          const existing = sessions.value.find((s) => s.name === existingName)
+          if (existing) {
+            switchSession(existing.name)
+            showNewModal.value = false
+            newDir.value = ''
+            newSessionError.value = ''
+            return
+          }
+        }
+
+        newSessionError.value = errorText
       }
 
       watch(showNewModal, (v) => {
-        if (v) nextTick(() => newDirInput.value?.focus())
+        if (v) {
+          newSessionError.value = ''
+          nextTick(() => newDirInput.value?.focus())
+        }
       })
+
+      function triggerImageUpload() {
+        uploadError.value = ''
+        imageInputEl.value?.click()
+      }
+
+      function handleImageSelected(event) {
+        const file = event.target.files?.[0]
+        if (!file) return
+        uploadFile(file)
+        event.target.value = ''
+      }
+
+      function uploadFile(file) {
+        uploadError.value = ''
+        uploadInProgress.value = true
+        uploadProgress.value = 0
+
+        const form = new FormData()
+        form.append('file', file)
+
+        const xhr = new XMLHttpRequest()
+        xhr.open('POST', `${apiBase}/api/sessions/${encodeURIComponent(activeSession.value)}/uploads`)
+
+        xhr.upload.onprogress = (event) => {
+          if (!event.lengthComputable) return
+          uploadProgress.value = Math.round((event.loaded / event.total) * 100)
+        }
+
+        xhr.onload = () => {
+          uploadInProgress.value = false
+
+          if (xhr.status < 200 || xhr.status >= 300) {
+            uploadError.value = xhr.responseText?.trim() || 'Upload failed'
+            return
+          }
+
+          try {
+            const data = JSON.parse(xhr.responseText)
+            uploadProgress.value = 100
+            if (data.transcript) {
+              sendText(`<transcript>${data.transcript}</transcript>`)
+            } else {
+              sendText(`@${data.full_path} `)
+            }
+            if (data.transcription_error && !data.transcript) {
+              uploadError.value = data.transcription_error
+            }
+            nextTick(() => focusTerminal())
+            setTimeout(() => {
+              if (!uploadInProgress.value) {
+                uploadProgress.value = 0
+                if (!data.transcription_error || data.transcript) {
+                  uploadError.value = ''
+                }
+              }
+            }, 800)
+          } catch {
+            uploadError.value = 'Invalid upload response'
+          }
+        }
+
+        xhr.onerror = () => {
+          uploadInProgress.value = false
+          uploadError.value = 'Upload failed'
+        }
+
+        xhr.send(form)
+      }
+
+      function startRecordingTimer() {
+        stopRecordingTimer()
+        recordingTimer = window.setInterval(() => {
+          recordingSeconds.value += 1
+        }, 1000)
+      }
+
+      function stopRecordingTimer() {
+        if (recordingTimer) {
+          window.clearInterval(recordingTimer)
+          recordingTimer = null
+        }
+      }
+
+      function stopRecordingStream() {
+        if (recordingStream) {
+          for (const track of recordingStream.getTracks()) {
+            track.stop()
+          }
+          recordingStream = null
+        }
+      }
+
+      function cleanupRecorder() {
+        stopRecordingTimer()
+        stopRecordingStream()
+        mediaRecorder = null
+        recordingChunks = []
+      }
+
+      async function startVoiceRecording() {
+        if (isRecording.value || uploadInProgress.value) return
+
+        uploadError.value = ''
+
+        try {
+          recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+          const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+            ? 'audio/webm;codecs=opus'
+            : 'audio/webm'
+
+          mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined)
+          recordingChunks = []
+          recordingSeconds.value = 0
+
+          mediaRecorder.ondataavailable = (event) => {
+            if (event.data && event.data.size > 0) {
+              recordingChunks.push(event.data)
+            }
+          }
+
+          mediaRecorder.onerror = () => {
+            uploadError.value = 'Recording failed'
+            isRecording.value = false
+            cleanupRecorder()
+          }
+
+          mediaRecorder.start()
+          isRecording.value = true
+          startRecordingTimer()
+        } catch {
+          uploadError.value = 'Microphone permission denied'
+          cleanupRecorder()
+        }
+      }
+
+      function cancelVoiceRecording() {
+        if (!mediaRecorder) return
+        const recorder = mediaRecorder
+        recorder.onstop = null
+        if (recorder.state !== 'inactive') {
+          recorder.stop()
+        }
+        isRecording.value = false
+        cleanupRecorder()
+      }
+
+      function finishVoiceRecording() {
+        if (!mediaRecorder) return
+
+        const recorder = mediaRecorder
+        recorder.onstop = () => {
+          const blob = new Blob(recordingChunks, { type: recorder.mimeType || 'audio/webm' })
+          const extension = blob.type.includes('ogg') ? 'ogg' : 'webm'
+          const file = new File([blob], `voice-note.${extension}`, { type: blob.type || 'audio/webm' })
+
+          isRecording.value = false
+          cleanupRecorder()
+          uploadFile(file)
+        }
+
+        if (recorder.state !== 'inactive') {
+          recorder.stop()
+        }
+      }
 
       onMounted(() => {
         window.addEventListener('keydown', handleGlobalKeydown, true)
+        fetchConfig()
         fetchSessions().then(() => {
           if (sessions.value.length > 0) {
             switchSession(sessions.value[0].name)
@@ -430,13 +757,14 @@
 
       onBeforeUnmount(() => {
         window.removeEventListener('keydown', handleGlobalKeydown, true)
+        cancelVoiceRecording()
       })
 
       return {
-        sessions, activeSession, output, ready, connected,
-        showNewModal, newDir, outputEl, newDirInput,
+        sessions, activeSession, output, ready, connected, harness,
+        showNewModal, newDir, newSessionError, uploadProgress, uploadInProgress, uploadError, uploadStatusText, isRecording, recordingDurationText, outputEl, newDirInput, imageInputEl,
         statusClass, statusText,
-        switchSession, sendKey, sendText, closeSession, createSession, focusTerminal
+        switchSession, sendKey, sendText, closeSession, createSession, focusTerminal, triggerImageUpload, handleImageSelected, startVoiceRecording, cancelVoiceRecording, finishVoiceRecording, saveHarness
       }
     }
   }).mount('#app')

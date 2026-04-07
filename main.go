@@ -3,6 +3,8 @@ package main
 import (
 	"log"
 	"net/http"
+
+	"github.com/joho/godotenv"
 )
 
 func corsMiddleware(next http.Handler) http.Handler {
@@ -21,6 +23,13 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 func main() {
+	if err := godotenv.Load(); err != nil {
+		log.Printf("warning: could not load .env: %v", err)
+	}
+	if err := loadConfig(configPath); err != nil {
+		log.Printf("warning: could not load config: %v", err)
+	}
+
 	adoptExistingSessions()
 
 	mux := http.NewServeMux()
@@ -36,7 +45,8 @@ func main() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
-	mux.HandleFunc("/api/sessions/", handleDeleteSession)
+	mux.HandleFunc("/api/sessions/", handleSessionAction)
+	mux.HandleFunc("/api/config", handleConfig)
 
 	// WebSocket
 	mux.HandleFunc("/ws/", handleWebSocket)
