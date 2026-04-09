@@ -3,9 +3,22 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
+
+func listenAddr() string {
+	port := strings.TrimSpace(os.Getenv("PORT"))
+	if port == "" {
+		return ":8080"
+	}
+	if strings.HasPrefix(port, ":") {
+		return port
+	}
+	return ":" + port
+}
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -35,7 +48,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	// REST API
-	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/sessions", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			handleListSessions(w, r)
@@ -44,17 +57,17 @@ func main() {
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-	})
-	mux.HandleFunc("/api/sessions/", handleSessionAction)
-	mux.HandleFunc("/api/config", handleConfig)
+	}))
+	mux.HandleFunc("/api/sessions/", requireAuth(handleSessionAction))
+	mux.HandleFunc("/api/config", requireAuth(handleConfig))
 
 	// WebSocket
-	mux.HandleFunc("/ws/", handleWebSocket)
+	mux.HandleFunc("/ws/", requireAuth(handleWebSocket))
 
 	// Frontend
 	mux.Handle("/", http.FileServer(http.Dir("web")))
 
-	addr := ":8080"
+	addr := listenAddr()
 	log.Printf("tclaw listening on %s", addr)
 	if err := http.ListenAndServe(addr, corsMiddleware(mux)); err != nil {
 		log.Fatal(err)

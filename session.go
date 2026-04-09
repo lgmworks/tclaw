@@ -271,7 +271,7 @@ func (s *Session) SendKey(key string) error {
 
 // capturePane captures the tmux pane content by session name.
 func capturePane(name string) (string, error) {
-	cmd := exec.Command("tmux", "capture-pane", "-t", name, "-p", "-S", "-1000")
+	cmd := exec.Command("tmux", "capture-pane", "-t", name, "-p", "-e", "-J", "-S", "-1000")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("tmux capture-pane: %w", err)

@@ -1,0 +1,15 @@
+[Unit]
+Description=tclaw
+After=network.target
+
+[Service]
+User=tclaw
+Group=tclaw
+WorkingDirectory=/home/tclaw/tclaw
+ExecStart=/home/tclaw/tclaw/tclaw
+Restart=always
+RestartSec=3
+Environment=PORT=8080
+
+[Install]
+WantedBy=multi-user.target

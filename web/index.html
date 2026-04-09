@@ -152,12 +152,6 @@
       font-size: 12px;
       cursor: pointer;
     }
-    @media (hover: hover) and (pointer: fine) {
-      .mobile-composer,
-      .composer-toggle {
-        display: none;
-      }
-    }
     @media (hover: none), (pointer: coarse) {
       .output {
         font-size: 12px;
@@ -166,6 +160,12 @@
         overflow-x: auto;
         white-space: pre;
         word-wrap: normal;
+      }
+      .keys-bar button {
+        min-width: 0;
+        padding: 0 8px;
+        font-size: 11px;
+        flex: 0 0 auto;
       }
     }
     .keys-bar {
@@ -226,6 +226,10 @@
       box-shadow: none;
     }
     .keys-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .keys-bar button.active {
+      border-color: #e94560;
+      color: #e94560;
+    }
     .keys-bar .composer-toggle {
       font-size: 24px;
       line-height: 1;
@@ -355,7 +359,8 @@
 <script type="importmap">
   {
     "imports": {
-      "vue": "https://unpkg.com/vue@3/dist/vue.esm-browser.js"
+      "vue": "https://unpkg.com/vue@3/dist/vue.esm-browser.js",
+      "ansi_up": "https://cdn.jsdelivr.net/npm/ansi_up@6.0.2/ansi_up.js"
     }
   }
 </script>
@@ -397,7 +402,8 @@
     ref="outputEl"
     tabindex="0"
     @click="focusTerminal"
-  ><template v-for="(segment, index) in outputSegments" :key="index"><a v-if="segment.type === 'link'" :href="segment.text" target="_blank" rel="noreferrer">{{ segment.text }}</a><span v-else>{{ segment.text }}</span></template></div>
+    v-html="outputHtml"
+  ></div>
 
   <div class="bottom-pane">
     <div class="mobile-composer" v-show="showMobileComposer">
@@ -407,6 +413,7 @@
         rows="1"
         placeholder="Message"
         @input="resizeMobileComposer"
+        @keydown.enter.exact.prevent="sendMobileComposer"
       ></textarea>
       <button @click="sendMobileComposer" :disabled="!mobileComposerText.trim() || !activeSession">Send</button>
     </div>
@@ -426,9 +433,6 @@
           <button @click="sendInput('/clear')" :disabled="!activeSession">Clear</button>
           <button @click="triggerImageUpload" :disabled="!activeSession || uploadInProgress">Img</button>
           <button @click="startVoiceRecording" :disabled="!activeSession || uploadInProgress">Mic</button>
-          <button class="composer-toggle" @click="toggleMobileComposer" title="Keyboard">
-            ⌨
-          </button>
         </template>
         <template v-else>
           <span class="arrow-pad">
@@ -438,8 +442,18 @@
             <button class="arrow-right" @click="sendKey('Right')" :disabled="!activeSession">→</button>
           </span>
           <button @click="sendKey('Enter')" :disabled="!activeSession">↵</button>
-          <button @click="sendKey('C-c')" :disabled="!activeSession">C-c</button>
+          <button @click="sendKey('Tab')" :disabled="!activeSession">Tab</button>
+          <button @click="sendKey('Escape')" :disabled="!activeSession">Esc</button>
+          <button @click="sendKey('BSpace')" :disabled="!activeSession">⌫</button>
+          <button @click="sendKey('Delete')" :disabled="!activeSession">Del</button>
+          <button @click="sendKey('C-c')" :disabled="!activeSession">Ctrl+C</button>
+          <button @click="sendKey('C-b')" :disabled="!activeSession">Ctrl+B</button>
+          <button @click="sendKey('C-d')" :disabled="!activeSession">Ctrl+D</button>
+          <button @click="sendKey('C-l')" :disabled="!activeSession">Ctrl+L</button>
+          <button @click="sendKey('C-u')" :disabled="!activeSession">Ctrl+U</button>
+          <button @click="sendKey('C-w')" :disabled="!activeSession">Ctrl+W</button>
         </template>
+        <button @click="insertComposerNewline" :disabled="!activeSession">NL</button>
       </template>
       <input ref="imageInputEl" type="file" accept="image/*" style="display:none" @change="handleImageSelected" />
       <span class="upload-status" :class="{ error: uploadError }">{{ uploadStatusText }}</span>
@@ -463,10 +477,26 @@
       </div>
     </div>
   </div>
+
+  <div class="modal-overlay" v-if="showAuthModal" @click.self="authTokenInput = authTokenInput.trim()">
+    <div class="modal">
+      <h2>Token</h2>
+      <input
+        v-model="authTokenInput"
+        @keydown.enter="saveAuthToken"
+        placeholder="AUTH_TOKEN"
+      />
+      <div class="error" v-if="authError">{{ authError }}</div>
+      <div class="actions">
+        <button class="confirm" @click="saveAuthToken">Save</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script type="module">
   import { createApp, computed, ref, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
+  import { AnsiUp } from 'ansi_up'
 
   createApp({
     setup() {
@@ -477,16 +507,20 @@
       const connected = ref(false)
       const harness = ref('claude')
       const showNewModal = ref(false)
+      const showAuthModal = ref(false)
       const newDir = ref('')
       const newSessionError = ref('')
+      const authError = ref('')
+      const authTokenInput = ref(localStorage.getItem('tclaw_auth_token') || '')
       const uploadProgress = ref(0)
       const uploadInProgress = ref(false)
       const uploadError = ref('')
       const isRecording = ref(false)
       const recordingSeconds = ref(0)
-      const showMobileComposer = ref(false)
+      const showMobileComposer = ref(true)
       const mobileComposerText = ref('')
-      const actionSet = ref('main')
+      const actionSetStorageKey = 'tclaw_action_set'
+      const actionSet = ref(localStorage.getItem(actionSetStorageKey) || 'main')
       const outputEl = ref(null)
       const mobileComposerEl = ref(null)
       const newDirInput = ref(null)
@@ -499,6 +533,8 @@
       let recordingChunks = []
       let recordingTimer = null
       const apiBase = window.location.origin
+      const authStorageKey = 'tclaw_auth_token'
+      const ansiUp = new AnsiUp()
 
       const statusClass = ref('status-disconnected')
       const statusText = ref('disconnected')
@@ -516,13 +552,57 @@
         }
       }
 
+      function currentAuthToken() {
+        return authTokenInput.value.trim()
+      }
+
+      function authHeaders(extra = {}) {
+        const token = currentAuthToken()
+        if (!token) return extra
+        return { ...extra, Authorization: `Bearer ${token}` }
+      }
+
+      function setUnauthorized() {
+        if (!currentAuthToken()) {
+          authError.value = ''
+        } else {
+          authError.value = 'Invalid token'
+        }
+        showAuthModal.value = true
+      }
+
+      async function apiFetch(path, options = {}) {
+        const opts = { ...options }
+        opts.headers = authHeaders(options.headers || {})
+
+        const res = await fetch(`${apiBase}${path}`, opts)
+        if (res.status === 401) {
+          setUnauthorized()
+        }
+        return res
+      }
+
+      async function saveAuthToken() {
+        const token = currentAuthToken()
+        localStorage.setItem(authStorageKey, token)
+        authError.value = ''
+        showAuthModal.value = false
+
+        await fetchConfig()
+        await fetchSessions()
+        if (sessions.value.length > 0) {
+          switchSession(activeSession.value || sessions.value[0].name)
+        }
+      }
+
       async function fetchSessions() {
-        const res = await fetch(`${apiBase}/api/sessions`)
+        const res = await apiFetch('/api/sessions')
+        if (!res.ok) return
         sessions.value = await res.json()
       }
 
       async function fetchConfig() {
-        const res = await fetch(`${apiBase}/api/config`)
+        const res = await apiFetch('/api/config')
         if (!res.ok) return
         const cfg = await res.json()
         harness.value = cfg.harness || 'claude'
@@ -533,7 +613,7 @@
       }
 
       async function saveConfig() {
-        const res = await fetch(`${apiBase}/api/config`, {
+        const res = await apiFetch('/api/config', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ harness: harness.value })
@@ -556,7 +636,12 @@
         updateStatus()
 
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-        ws = new WebSocket(`${proto}//${window.location.host}/ws/${name}`)
+        const token = currentAuthToken()
+        const url = new URL(`${proto}//${window.location.host}/ws/${name}`)
+        if (token) {
+          url.searchParams.set('token', token)
+        }
+        ws = new WebSocket(url.toString())
 
         ws.onopen = () => {
           connected.value = true
@@ -594,7 +679,7 @@
       }
 
       function focusTerminal() {
-        outputEl.value?.focus()
+        mobileComposerEl.value?.focus()
       }
 
       function sanitizeSessionName(dir) {
@@ -605,80 +690,6 @@
         s = s.replace(/^-+|-+$/g, '')
         s = s.toLowerCase()
         return s || 'session'
-      }
-
-      function normalizeKeyName(key) {
-        if (key === 'ArrowUp') return 'Up'
-        if (key === 'ArrowDown') return 'Down'
-        if (key === 'ArrowLeft') return 'Left'
-        if (key === 'ArrowRight') return 'Right'
-        if (key === 'Backspace') return 'BSpace'
-        if (key === 'Delete') return 'Delete'
-        if (key === 'Control' || key === 'Shift' || key === 'Alt' || key === 'Meta') return ''
-        if (key === 'Esc') return 'Escape'
-        if (key === ' ') return 'Space'
-        if (key.length === 1) return key.toLowerCase()
-        return key
-      }
-
-      function toTmuxKey(event) {
-        const parts = []
-        if (event.ctrlKey) parts.push('C')
-        if (event.altKey || event.metaKey) parts.push('M')
-        if (event.shiftKey) parts.push('S')
-
-        const key = normalizeKeyName(event.key)
-        if (!key) return ''
-        return parts.length ? `${parts.join('-')}-${key}` : key
-      }
-
-      function shouldHandleCombo(event) {
-        const key = event.key
-        return (
-          key === 'Backspace' ||
-          key === 'Delete' ||
-          event.ctrlKey ||
-          event.altKey ||
-          event.metaKey ||
-          key === 'Enter' ||
-          key === 'Tab' ||
-          key === 'Escape' ||
-          key.startsWith('Arrow')
-        )
-      }
-
-      function hasSelectionToCopy() {
-        const selection = window.getSelection()
-        return !!selection && selection.toString().length > 0
-      }
-
-      function handleGlobalKeydown(event) {
-        if (!ws || !activeSession.value || !connected.value) return
-
-        const target = event.target
-        const tagName = target?.tagName
-
-        if (target === newDirInput.value) return
-
-        if (target?.isContentEditable || tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT') {
-          return
-        }
-
-        const lowerKey = event.key.toLowerCase()
-        if ((event.metaKey || event.ctrlKey) && lowerKey === 'c' && hasSelectionToCopy()) {
-          return
-        }
-
-        if (event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
-          event.preventDefault()
-          sendText(event.key)
-          return
-        }
-
-        if (!shouldHandleCombo(event)) return
-
-        event.preventDefault()
-        sendKey(toTmuxKey(event))
       }
 
       function sendText(text) {
@@ -708,7 +719,7 @@
         return ''
       })
 
-      const outputSegments = computed(() => linkifyOutput(output.value))
+      const outputHtml = computed(() => ansiUp.ansi_to_html(output.value || ''))
 
       const recordingDurationText = computed(() => {
         const minutes = Math.floor(recordingSeconds.value / 60)
@@ -716,46 +727,11 @@
         return `${minutes}:${String(seconds).padStart(2, '0')}`
       })
 
-      function linkifyOutput(text) {
-        const pattern = /(https?:\/\/[^\s]+)/g
-        const segments = []
-        let lastIndex = 0
-
-        for (const match of text.matchAll(pattern)) {
-          const index = match.index ?? 0
-          if (index > lastIndex) {
-            segments.push({ type: 'text', text: text.slice(lastIndex, index) })
-          }
-          segments.push({ type: 'link', text: match[0] })
-          lastIndex = index + match[0].length
-        }
-
-        if (lastIndex < text.length) {
-          segments.push({ type: 'text', text: text.slice(lastIndex) })
-        }
-
-        if (segments.length === 0) {
-          segments.push({ type: 'text', text })
-        }
-
-        return segments
-      }
-
       function sendKey(key) {
         if (!key || !ws) return
         ws.send(JSON.stringify({ type: 'key', text: key }))
         ready.value = false
         updateStatus()
-      }
-
-      function toggleMobileComposer() {
-        showMobileComposer.value = !showMobileComposer.value
-        if (showMobileComposer.value) {
-          nextTick(() => {
-            resizeMobileComposer()
-            mobileComposerEl.value?.focus()
-          })
-        }
       }
 
       function resizeMobileComposer() {
@@ -768,11 +744,17 @@
 
       function toggleActionSet() {
         actionSet.value = actionSet.value === 'main' ? 'nav' : 'main'
+        localStorage.setItem(actionSetStorageKey, actionSet.value)
       }
 
       function sendMobileComposer() {
+        if (!activeSession.value) return
         const text = mobileComposerText.value.trim()
-        if (!text || !activeSession.value) return
+        if (!text) {
+          sendKey('Enter')
+          nextTick(() => mobileComposerEl.value?.focus())
+          return
+        }
         sendInput(text)
         mobileComposerText.value = ''
         nextTick(() => {
@@ -781,9 +763,15 @@
         })
       }
 
+      function insertComposerNewline() {
+        if (!activeSession.value) return
+        sendText('\n')
+        nextTick(() => mobileComposerEl.value?.focus())
+      }
+
       async function closeSession(name) {
         if (!confirm(`Close session "${name}"?`)) return
-        await fetch(`${apiBase}/api/sessions/${name}`, { method: 'DELETE' })
+        await apiFetch(`/api/sessions/${name}`, { method: 'DELETE' })
         if (activeSession.value === name) {
           if (ws) { ws.close(); ws = null }
           activeSession.value = null
@@ -802,7 +790,7 @@
         if (!dir) return
         newSessionError.value = ''
 
-        const res = await fetch(`${apiBase}/api/sessions`, {
+        const res = await apiFetch('/api/sessions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ dir })
@@ -865,6 +853,10 @@
 
         const xhr = new XMLHttpRequest()
         xhr.open('POST', `${apiBase}/api/sessions/${encodeURIComponent(activeSession.value)}/uploads`)
+        const token = currentAuthToken()
+        if (token) {
+          xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+        }
 
         xhr.upload.onprogress = (event) => {
           if (!event.lengthComputable) return
@@ -873,6 +865,11 @@
 
         xhr.onload = () => {
           uploadInProgress.value = false
+
+          if (xhr.status === 401) {
+            setUnauthorized()
+            return
+          }
 
           if (xhr.status < 200 || xhr.status >= 300) {
             uploadError.value = xhr.responseText?.trim() || 'Upload failed'
@@ -1066,27 +1063,28 @@
       }
 
       onMounted(() => {
-        window.addEventListener('keydown', handleGlobalKeydown, true)
         fetchConfig()
         fetchSessions().then(() => {
           if (sessions.value.length > 0) {
             switchSession(sessions.value[0].name)
           }
         })
-        nextTick(() => focusTerminal())
+        nextTick(() => {
+          resizeMobileComposer()
+          mobileComposerEl.value?.focus()
+        })
       })
 
       onBeforeUnmount(() => {
-        window.removeEventListener('keydown', handleGlobalKeydown, true)
         cancelVoiceRecording()
         stopMicStream()
       })
 
       return {
-        sessions, activeSession, output, outputSegments, ready, connected, harness,
-        showNewModal, newDir, newSessionError, uploadProgress, uploadInProgress, uploadError, uploadStatusText, isRecording, recordingDurationText, showMobileComposer, mobileComposerText, actionSet, outputEl, mobileComposerEl, newDirInput, imageInputEl,
+        sessions, activeSession, output, outputHtml, ready, connected, harness,
+        showNewModal, showAuthModal, newDir, newSessionError, authError, authTokenInput, uploadProgress, uploadInProgress, uploadError, uploadStatusText, isRecording, recordingDurationText, showMobileComposer, mobileComposerText, actionSet, outputEl, mobileComposerEl, newDirInput, imageInputEl,
         statusClass, statusText,
-        switchSession, sendKey, sendText, sendCommand, sendInput, closeSession, createSession, focusTerminal, triggerImageUpload, handleImageSelected, startVoiceRecording, cancelVoiceRecording, finishVoiceRecording, saveHarness, toggleMobileComposer, resizeMobileComposer, toggleActionSet, sendMobileComposer
+        switchSession, sendKey, sendText, sendCommand, sendInput, closeSession, createSession, focusTerminal, triggerImageUpload, handleImageSelected, startVoiceRecording, cancelVoiceRecording, finishVoiceRecording, saveHarness, saveAuthToken, resizeMobileComposer, toggleActionSet, sendMobileComposer, insertComposerNewline
       }
     }
   }).mount('#app')
