@@ -110,7 +110,6 @@
       line-height: 1.4;
       outline: none;
     }
-    .output:focus { box-shadow: inset 0 0 0 1px #e94560; }
     .output.disconnected { opacity: 0.7; }
     .output a {
       color: #7dd3fc;
@@ -400,8 +399,6 @@
     class="output"
     :class="{ disconnected: !connected }"
     ref="outputEl"
-    tabindex="0"
-    @click="focusTerminal"
     v-html="outputHtml"
   ></div>
 
@@ -503,7 +500,6 @@
       const sessions = ref([])
       const activeSession = ref(null)
       const output = ref('')
-      const ready = ref(false)
       const connected = ref(false)
       const harness = ref('claude')
       const showNewModal = ref(false)
@@ -527,6 +523,8 @@
       const imageInputEl = ref(null)
 
       let ws = null
+      let reconnectTimer = null
+      let reconnectAttempts = 0
       let mediaRecorder = null
       let recordingStream = null
       let micStream = null
@@ -540,15 +538,12 @@
       const statusText = ref('disconnected')
 
       function updateStatus() {
-        if (!connected.value) {
+        if (connected.value) {
+          statusClass.value = 'status-ready'
+          statusText.value = 'connected'
+        } else {
           statusClass.value = 'status-disconnected'
           statusText.value = 'disconnected'
-        } else if (ready.value) {
-          statusClass.value = 'status-ready'
-          statusText.value = 'ready'
-        } else {
-          statusClass.value = 'status-busy'
-          statusText.value = 'busy'
         }
       }
 
@@ -625,14 +620,16 @@
       }
 
       function connectWS(name) {
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer)
+          reconnectTimer = null
+        }
         if (ws) {
           ws.close()
           ws = null
         }
 
         connected.value = false
-        ready.value = false
-        output.value = ''
         updateStatus()
 
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -641,22 +638,22 @@
         if (token) {
           url.searchParams.set('token', token)
         }
-        ws = new WebSocket(url.toString())
+        const newWs = new WebSocket(url.toString())
+        ws = newWs
 
-        ws.onopen = () => {
+        newWs.onopen = () => {
+          if (ws !== newWs) return
           connected.value = true
+          reconnectAttempts = 0
           updateStatus()
-          nextTick(() => focusTerminal())
         }
 
-        ws.onmessage = (e) => {
+        newWs.onmessage = (e) => {
+          if (ws !== newWs) return
           const msg = JSON.parse(e.data)
 
           if (msg.type === 'snapshot' || msg.type === 'update') {
             output.value = msg.text
-            if (msg.ready !== undefined) ready.value = msg.ready
-          } else if (msg.type === 'status') {
-            ready.value = msg.ready
           }
 
           updateStatus()
@@ -667,10 +664,25 @@
           })
         }
 
-        ws.onclose = () => {
+        newWs.onclose = () => {
+          if (ws !== newWs) return
           connected.value = false
           updateStatus()
+          scheduleReconnect(name)
         }
+      }
+
+      function scheduleReconnect(name) {
+        if (reconnectTimer) return
+        if (activeSession.value !== name) return
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000)
+        reconnectAttempts++
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null
+          if (activeSession.value === name) {
+            connectWS(name)
+          }
+        }, delay)
       }
 
       function switchSession(name) {
@@ -695,22 +707,16 @@
       function sendText(text) {
         if (!text || !ws) return
         ws.send(JSON.stringify({ type: 'text', text }))
-        ready.value = false
-        updateStatus()
       }
 
       function sendCommand(text) {
         if (!text || !ws) return
         ws.send(JSON.stringify({ type: 'input', text, submit_key: 'Enter' }))
-        ready.value = false
-        updateStatus()
       }
 
       function sendInput(text, submitKey = 'Enter') {
         if (!text || !ws) return
         ws.send(JSON.stringify({ type: 'input', text, submit_key: submitKey }))
-        ready.value = false
-        updateStatus()
       }
 
       const uploadStatusText = computed(() => {
@@ -730,8 +736,6 @@
       function sendKey(key) {
         if (!key || !ws) return
         ws.send(JSON.stringify({ type: 'key', text: key }))
-        ready.value = false
-        updateStatus()
       }
 
       function resizeMobileComposer() {
@@ -773,6 +777,11 @@
         if (!confirm(`Close session "${name}"?`)) return
         await apiFetch(`/api/sessions/${name}`, { method: 'DELETE' })
         if (activeSession.value === name) {
+          if (reconnectTimer) {
+            clearTimeout(reconnectTimer)
+            reconnectTimer = null
+          }
+          reconnectAttempts = 0
           if (ws) { ws.close(); ws = null }
           activeSession.value = null
           output.value = ''
@@ -1062,7 +1071,32 @@
         }
       }
 
+      function reconnectIfNeeded() {
+        if (!activeSession.value) return
+        // ws is missing or not OPEN — try reconnecting now, no backoff
+        if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+          if (reconnectTimer) {
+            clearTimeout(reconnectTimer)
+            reconnectTimer = null
+          }
+          reconnectAttempts = 0
+          connectWS(activeSession.value)
+        }
+      }
+
+      function onVisibilityChange() {
+        if (document.visibilityState === 'visible') {
+          reconnectIfNeeded()
+        }
+      }
+
+      function onOnline() {
+        reconnectIfNeeded()
+      }
+
       onMounted(() => {
+        document.addEventListener('visibilitychange', onVisibilityChange)
+        window.addEventListener('online', onOnline)
         fetchConfig()
         fetchSessions().then(() => {
           if (sessions.value.length > 0) {
@@ -1076,15 +1110,21 @@
       })
 
       onBeforeUnmount(() => {
+        document.removeEventListener('visibilitychange', onVisibilityChange)
+        window.removeEventListener('online', onOnline)
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer)
+          reconnectTimer = null
+        }
         cancelVoiceRecording()
         stopMicStream()
       })
 
       return {
-        sessions, activeSession, output, outputHtml, ready, connected, harness,
+        sessions, activeSession, output, outputHtml, connected, harness,
         showNewModal, showAuthModal, newDir, newSessionError, authError, authTokenInput, uploadProgress, uploadInProgress, uploadError, uploadStatusText, isRecording, recordingDurationText, showMobileComposer, mobileComposerText, actionSet, outputEl, mobileComposerEl, newDirInput, imageInputEl,
         statusClass, statusText,
-        switchSession, sendKey, sendText, sendCommand, sendInput, closeSession, createSession, focusTerminal, triggerImageUpload, handleImageSelected, startVoiceRecording, cancelVoiceRecording, finishVoiceRecording, saveHarness, saveAuthToken, resizeMobileComposer, toggleActionSet, sendMobileComposer, insertComposerNewline
+        switchSession, sendKey, sendText, sendCommand, sendInput, closeSession, createSession, triggerImageUpload, handleImageSelected, startVoiceRecording, cancelVoiceRecording, finishVoiceRecording, saveHarness, saveAuthToken, resizeMobileComposer, toggleActionSet, sendMobileComposer, insertComposerNewline
       }
     }
   }).mount('#app')

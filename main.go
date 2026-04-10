@@ -64,8 +64,12 @@ func main() {
 	// WebSocket
 	mux.HandleFunc("/ws/", requireAuth(handleWebSocket))
 
-	// Frontend
-	mux.Handle("/", http.FileServer(http.Dir("web")))
+	// Frontend (no-cache so dev edits are picked up immediately)
+	fs := http.FileServer(http.Dir("web"))
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		fs.ServeHTTP(w, r)
+	}))
 
 	addr := listenAddr()
 	log.Printf("tclaw listening on %s", addr)
