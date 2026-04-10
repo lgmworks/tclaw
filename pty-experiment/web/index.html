@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PTY Experiment</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1a1a2e; display: flex; flex-direction: column; height: 100vh; }
+    #header {
+      padding: 8px 16px;
+      background: #16213e;
+      color: #e0e0e0;
+      font-family: monospace;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    #header span.title { font-weight: bold; color: #00d2ff; }
+    #header span.status { font-size: 12px; }
+    #header span.status.connected { color: #4caf50; }
+    #header span.status.disconnected { color: #f44336; }
+    #terminal-container { flex: 1; padding: 4px; }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <span class="title">pty-experiment</span>
+    <span id="status" class="status disconnected">disconnected</span>
+  </div>
+  <div id="terminal-container"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+  <script>
+    const term = new Terminal({
+      cursorBlink: true,
+      fontSize: 14,
+      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      theme: {
+        background: '#1a1a2e',
+        foreground: '#e0e0e0',
+        cursor: '#00d2ff',
+        selectionBackground: '#3a3a5e',
+      },
+    });
+
+    const fitAddon = new FitAddon.FitAddon();
+    const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+
+    term.loadAddon(fitAddon);
+    term.loadAddon(webLinksAddon);
+    term.open(document.getElementById('terminal-container'));
+    fitAddon.fit();
+
+    const statusEl = document.getElementById('status');
+
+    function connect() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${proto}//${location.host}/ws`);
+      ws.binaryType = 'arraybuffer';
+
+      ws.onopen = () => {
+        statusEl.textContent = 'connected';
+        statusEl.className = 'status connected';
+
+        // Send initial size
+        ws.send(JSON.stringify({
+          type: 'resize',
+          cols: term.cols,
+          rows: term.rows,
+        }));
+      };
+
+      ws.onmessage = (ev) => {
+        if (ev.data instanceof ArrayBuffer) {
+          term.write(new Uint8Array(ev.data));
+        } else {
+          term.write(ev.data);
+        }
+      };
+
+      ws.onclose = () => {
+        statusEl.textContent = 'disconnected';
+        statusEl.className = 'status disconnected';
+        term.write('\r\n\x1b[31m[disconnected - reconnecting in 2s...]\x1b[0m\r\n');
+        setTimeout(connect, 2000);
+      };
+
+      ws.onerror = () => ws.close();
+
+      // Terminal input → WebSocket
+      term.onData((data) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(new TextEncoder().encode(data));
+        }
+      });
+
+      // Handle resize
+      term.onResize(({ cols, rows }) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+        }
+      });
+
+      window.addEventListener('resize', () => fitAddon.fit());
+    }
+
+    connect();
+  </script>
+</body>
+</html>
