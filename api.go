@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -46,6 +47,55 @@ func handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(infos)
+}
+
+type DirInfo struct {
+	Name    string `json:"name"`    // raw directory name (used as dir to create a session)
+	Session string `json:"session"` // sanitized session name (used in the URL path)
+	Running bool   `json:"running"` // true if a session for this dir is alive
+}
+
+// handleListDirs lists the project directories under tclaw's working
+// directory, skipping hidden dirs and the configured exclude list.
+func handleListDirs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		http.Error(w, "could not read working directory", http.StatusInternalServerError)
+		return
+	}
+
+	cfg := getConfig()
+	exclude := make(map[string]bool, len(cfg.ExcludeDirs))
+	for _, d := range cfg.ExcludeDirs {
+		exclude[d] = true
+	}
+	live := liveSessionNames()
+
+	dirs := make([]DirInfo, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, ".") || exclude[name] {
+			continue
+		}
+		session := sanitizeName(name)
+		dirs = append(dirs, DirInfo{
+			Name:    name,
+			Session: session,
+			Running: live[session],
+		})
+	}
+	sort.Slice(dirs, func(i, j int) bool { return dirs[i].Name < dirs[j].Name })
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(dirs)
 }
 
 func handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -88,8 +138,6 @@ func handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session name required", http.StatusBadRequest)
 		return
 	}
-
-	removeHub(name)
 
 	if err := deleteSession(name); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -135,14 +183,17 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hub := getOrCreateHub(session)
 	client := &Client{
-		hub:  hub,
-		conn: conn,
-		send: make(chan []byte, 64),
+		session: session,
+		conn:    conn,
+		send:    make(chan []byte, 256),
 	}
 
-	hub.addClient(client)
+	if !session.addClient(client) {
+		conn.Close()
+		return
+	}
+
 	go client.writePump()
 	go client.readPump()
 }

@@ -43,8 +43,6 @@ func main() {
 		log.Printf("warning: could not load config: %v", err)
 	}
 
-	adoptExistingSessions()
-
 	mux := http.NewServeMux()
 
 	// REST API
@@ -60,19 +58,30 @@ func main() {
 	}))
 	mux.HandleFunc("/api/sessions/", requireAuth(handleSessionAction))
 	mux.HandleFunc("/api/config", requireAuth(handleConfig))
+	mux.HandleFunc("/api/dirs", requireAuth(handleListDirs))
 
 	// WebSocket
 	mux.HandleFunc("/ws/", requireAuth(handleWebSocket))
 
-	// Frontend (no-cache so dev edits are picked up immediately)
-	fs := http.FileServer(http.Dir("web"))
+	// Frontend — SPA fallback: serve real files from web/, otherwise serve
+	// index.html so client-side routes (/agente, /inventario, …) work.
+	webDir := http.Dir("web")
+	fileServer := http.FileServer(webDir)
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		fs.ServeHTTP(w, r)
+		if f, err := webDir.Open(r.URL.Path); err == nil {
+			info, statErr := f.Stat()
+			f.Close()
+			if statErr == nil && !info.IsDir() {
+				fileServer.ServeHTTP(w, r)
+				return
+			}
+		}
+		http.ServeFile(w, r, "web/index.html")
 	}))
 
 	addr := listenAddr()
-	log.Printf("tclaw listening on %s", addr)
+	log.Printf("tclaw listening on http://localhost%s", addr)
 	if err := http.ListenAndServe(addr, corsMiddleware(mux)); err != nil {
 		log.Fatal(err)
 	}

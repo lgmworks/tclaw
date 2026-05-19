@@ -8,19 +8,28 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"time"
 	"unicode"
 
+	"github.com/creack/pty"
 	"golang.org/x/text/unicode/norm"
 )
+
+// replayBufferCap is the size of the per-session ring buffer kept so a
+// reconnecting client can repaint the terminal from recent output.
+const replayBufferCap = 256 * 1024
 
 type Session struct {
 	Name string `json:"name"`
 	Dir  string `json:"dir"`
 
-	mu       sync.Mutex
-	lastSnap string
-	polling  bool
+	mu      sync.Mutex
+	ptmx    *os.File
+	cmd     *exec.Cmd
+	clients map[*Client]bool
+	buf     []byte // ring buffer of recent PTY output
+	closed  bool
+	rows    uint16
+	cols    uint16
 }
 
 var (
@@ -28,34 +37,7 @@ var (
 	sessionsMu sync.RWMutex
 )
 
-// adoptExistingSessions finds running tmux sessions and registers them in tclaw.
-func adoptExistingSessions() {
-	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}:#{pane_current_path}")
-	out, err := cmd.Output()
-	if err != nil {
-		return // no tmux server or no sessions
-	}
-
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 2)
-		name := parts[0]
-		dir := ""
-		if len(parts) > 1 {
-			dir = parts[1]
-		}
-
-		sessionsMu.Lock()
-		if _, exists := sessions[name]; !exists {
-			sessions[name] = &Session{Name: name, Dir: dir}
-		}
-		sessionsMu.Unlock()
-	}
-}
-
-// sanitizeName converts a directory path into a safe tmux session name.
+// sanitizeName converts a directory path into a safe session name.
 // "/home/user/mi proyecto ñoño" → "home-user-mi-proyecto-nono"
 func sanitizeName(dir string) string {
 	// Normalize unicode and strip accents/tildes
@@ -103,13 +85,11 @@ func resolveDir(dir string) (string, error) {
 		dir = "."
 	}
 
-	// Resolve to absolute path relative to CWD
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return "", fmt.Errorf("invalid path: %w", err)
 	}
 
-	// Create directory if it doesn't exist
 	if err := os.MkdirAll(abs, 0755); err != nil {
 		return "", fmt.Errorf("cannot create directory: %w", err)
 	}
@@ -117,10 +97,9 @@ func resolveDir(dir string) (string, error) {
 	return abs, nil
 }
 
+// harnessCommandParts returns the command + args for the configured harness.
 func harnessCommandParts() []string {
-	harness := getConfig().Harness
-
-	switch harness {
+	switch getConfig().Harness {
 	case "codex":
 		return []string{"codex", "--dangerously-bypass-approvals-and-sandbox"}
 	case "claude":
@@ -130,21 +109,36 @@ func harnessCommandParts() []string {
 	}
 }
 
-func tmuxKeysForCommand(parts []string) []string {
-	if len(parts) == 0 {
-		return nil
+// harnessCommand builds the exec.Cmd to launch the configured harness.
+// It tries tclaw's own PATH first; if the harness isn't there — e.g. tclaw
+// runs under systemd with a minimal PATH that lacks ~/.local/bin or nvm —
+// it falls back to a login shell so the user's full environment is loaded.
+func harnessCommand() *exec.Cmd {
+	parts := harnessCommandParts()
+
+	// 1. On tclaw's own PATH.
+	if path, err := exec.LookPath(parts[0]); err == nil {
+		return exec.Command(path, parts[1:]...)
 	}
 
-	keys := make([]string, 0, len(parts)*2-1)
-	for i, part := range parts {
-		if i > 0 {
-			keys = append(keys, "Space")
+	// 2. ~/.local/bin — where the Claude Code installer puts the binary.
+	// systemd's minimal PATH (and even login shells on some setups) miss it.
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidate := filepath.Join(home, ".local", "bin", parts[0])
+		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
+			return exec.Command(candidate, parts[1:]...)
 		}
-		keys = append(keys, part)
 	}
-	return keys
+
+	// 3. Login shell — picks up the user's full environment (nvm, etc.).
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/bash"
+	}
+	return exec.Command(shell, "-lc", "exec "+strings.Join(parts, " "))
 }
 
+// createSession spawns the configured harness inside a PTY.
 func createSession(dir string) (*Session, error) {
 	absDir, err := resolveDir(dir)
 	if err != nil {
@@ -160,24 +154,33 @@ func createSession(dir string) (*Session, error) {
 	}
 	sessionsMu.Unlock()
 
-	// Create tmux session in background, starting in the resolved directory
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", name, "-c", absDir)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("tmux new-session: %s: %w", string(out), err)
+	cmd := harnessCommand()
+	cmd.Dir = absDir
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("pty start: %w", err)
+	}
+	_ = pty.Setsize(ptmx, &pty.Winsize{Rows: 24, Cols: 80})
+
+	s := &Session{
+		Name:    name,
+		Dir:     absDir,
+		ptmx:    ptmx,
+		cmd:     cmd,
+		clients: make(map[*Client]bool),
+		buf:     make([]byte, 0, replayBufferCap),
+		rows:    24,
+		cols:    80,
 	}
 
-	// Start the configured harness inside the session.
-	args := append([]string{"send-keys", "-t", name}, tmuxKeysForCommand(harnessCommandParts())...)
-	args = append(args, "Enter")
-	cmd = exec.Command("tmux", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("tmux send-keys harness: %s: %w", string(out), err)
-	}
-
-	s := &Session{Name: name, Dir: absDir}
 	sessionsMu.Lock()
 	sessions[name] = s
 	sessionsMu.Unlock()
+
+	go s.readLoop()
+	go s.waitLoop()
 
 	return s, nil
 }
@@ -198,93 +201,149 @@ func listSessions() []*Session {
 	return result
 }
 
+// liveSessionNames returns the set of session names with a running process.
+func liveSessionNames() map[string]bool {
+	sessionsMu.RLock()
+	defer sessionsMu.RUnlock()
+	m := make(map[string]bool, len(sessions))
+	for name := range sessions {
+		m[name] = true
+	}
+	return m
+}
+
 func deleteSession(name string) error {
-	sessionsMu.Lock()
-	s, exists := sessions[name]
-	if !exists {
-		sessionsMu.Unlock()
+	s := getSession(name)
+	if s == nil {
 		return fmt.Errorf("session %q not found", name)
 	}
-	delete(sessions, name)
-	sessionsMu.Unlock()
-
-	_ = s // stop any polling goroutine if needed
-
-	cmd := exec.Command("tmux", "kill-session", "-t", name)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux kill-session: %s: %w", string(out), err)
-	}
+	s.Close()
 	return nil
 }
 
-func (s *Session) SendInput(text, submitKey string) error {
-	if text != "" {
-		if err := s.PasteText(text); err != nil {
-			return err
+// readLoop streams PTY output into the ring buffer and broadcasts it to
+// every connected client. It runs for the whole life of the session,
+// independent of whether any client is connected.
+func (s *Session) readLoop() {
+	tmp := make([]byte, 8192)
+	for {
+		n, err := s.ptmx.Read(tmp)
+		if n > 0 {
+			data := make([]byte, n)
+			copy(data, tmp[:n])
+			s.appendBuf(data)
+			s.broadcast(data)
 		}
-		time.Sleep(300 * time.Millisecond)
+		if err != nil {
+			return
+		}
 	}
-
-	if submitKey == "" {
-		submitKey = "Enter"
-	}
-
-	cmd := exec.Command("tmux", "send-keys", "-t", s.Name, submitKey)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys submit key: %s: %w", string(out), err)
-	}
-	return nil
 }
 
-func (s *Session) PasteText(text string) error {
-	bufferName := "tclaw-input"
+// waitLoop reaps the harness process and tears the session down once it exits.
+func (s *Session) waitLoop() {
+	_ = s.cmd.Wait()
 
-	setCmd := exec.Command("tmux", "set-buffer", "-b", bufferName, "--", text)
-	if out, err := setCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux set-buffer: %s: %w", string(out), err)
+	s.mu.Lock()
+	s.closed = true
+	_ = s.ptmx.Close()
+	clients := make([]*Client, 0, len(s.clients))
+	for c := range s.clients {
+		clients = append(clients, c)
+	}
+	s.mu.Unlock()
+
+	for _, c := range clients {
+		c.close()
 	}
 
-	pasteCmd := exec.Command("tmux", "paste-buffer", "-b", bufferName, "-t", s.Name)
-	if out, err := pasteCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux paste-buffer: %s: %w", string(out), err)
-	}
-
-	return nil
+	sessionsMu.Lock()
+	delete(sessions, s.Name)
+	sessionsMu.Unlock()
 }
 
-func (s *Session) SendText(text string) error {
-	cmd := exec.Command("tmux", "send-keys", "-t", s.Name, "-l", text)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys text: %s: %w", string(out), err)
+func (s *Session) appendBuf(data []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.buf = append(s.buf, data...)
+	if len(s.buf) > replayBufferCap {
+		s.buf = append([]byte(nil), s.buf[len(s.buf)-replayBufferCap:]...)
 	}
-	return nil
 }
 
-// SendKey sends a raw tmux key (e.g. "Up", "Down", "Enter", "Escape", "y", "n").
-func (s *Session) SendKey(key string) error {
-	cmd := exec.Command("tmux", "send-keys", "-t", s.Name, key)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys: %s: %w", string(out), err)
+// addClient registers a client and primes it with the replay buffer.
+// Returns false if the session has already ended.
+func (s *Session) addClient(c *Client) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
 	}
-	return nil
+	s.clients[c] = true
+	if len(s.buf) > 0 {
+		replay := make([]byte, len(s.buf))
+		copy(replay, s.buf)
+		select {
+		case c.send <- replay:
+		default:
+		}
+	}
+	return true
 }
 
-// capturePane captures the tmux pane content by session name.
-func capturePane(name string) (string, error) {
-	cmd := exec.Command("tmux", "capture-pane", "-t", name, "-p", "-e", "-J", "-S", "-1000")
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("tmux capture-pane: %w", err)
-	}
-
-	lines := strings.Split(string(out), "\n")
-	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
-		lines = lines[:len(lines)-1]
-	}
-
-	return strings.Join(lines, "\n"), nil
+func (s *Session) removeClient(c *Client) {
+	s.mu.Lock()
+	delete(s.clients, c)
+	s.mu.Unlock()
 }
 
-func (s *Session) Capture() (string, error) {
-	return capturePane(s.Name)
+func (s *Session) broadcast(data []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for c := range s.clients {
+		select {
+		case c.send <- data:
+		default:
+			// Client too slow — drop the chunk for that client.
+		}
+	}
+}
+
+// Write forwards raw bytes from a client straight into the PTY.
+func (s *Session) Write(data []byte) error {
+	s.mu.Lock()
+	closed := s.closed
+	ptmx := s.ptmx
+	s.mu.Unlock()
+	if closed {
+		return fmt.Errorf("session %q closed", s.Name)
+	}
+	_, err := ptmx.Write(data)
+	return err
+}
+
+// Resize applies a new terminal size to the PTY.
+func (s *Session) Resize(rows, cols uint16) {
+	if rows == 0 || cols == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.rows, s.cols = rows, cols
+	_ = pty.Setsize(s.ptmx, &pty.Winsize{Rows: rows, Cols: cols})
+}
+
+// Close kills the harness process; waitLoop handles the rest of teardown.
+func (s *Session) Close() {
+	s.mu.Lock()
+	closed := s.closed
+	cmd := s.cmd
+	s.mu.Unlock()
+	if closed || cmd.Process == nil {
+		return
+	}
+	_ = cmd.Process.Kill()
 }

@@ -1,3 +1,5 @@
 {
-  "harness": "codex"
+  "harness": "claude",
+  "default_session": "agent",
+  "exclude_dirs": ["web", "uploads", "pty-experiment", "scripts", "skills", "claude", "tls", "data"]
 }

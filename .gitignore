@@ -1,6 +1,9 @@
 tclaw
+tclaw-linux-amd64
 .DS_Store
 .env
 config.json
 uploads/
 skills/
+.gocache/
+.gomodcache/

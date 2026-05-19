@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>tclaw</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
   <style>
     * {
       margin: 0;
@@ -85,9 +86,15 @@
       overflow-x: auto;
       overflow-y: hidden;
     }
+    .sessions-bar .dir {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+    }
+    /* default state = stopped: just a folder, no live PTY session */
     .sessions-bar button {
       background: #16213e;
-      color: #e0e0e0;
+      color: #8a93a8;
       border: 1px solid #1a1a2e;
       padding: 4px 12px;
       border-radius: 4px;
@@ -95,26 +102,35 @@
       font-family: inherit;
       font-size: 12px;
       touch-action: manipulation;
+      white-space: nowrap;
     }
     .sessions-bar button:hover { background: #1a1a2e; }
+    /* running = live PTY session for this folder */
+    .sessions-bar button.running { border-color: #2d6a4f; color: #95d5b2; }
+    /* active = the session currently shown (wins over running) */
     .sessions-bar button.active { border-color: #e94560; color: #e94560; }
+    .sessions-bar .stop-btn {
+      padding: 4px 6px;
+      color: #ddb892;
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 13px;
+    }
     .sessions-bar .new-btn { color: #95d5b2; border-color: #2d6a4f; }
 
-    .output {
+    .terminal-wrap {
       flex: 1 1 auto;
       min-height: 0;
-      overflow-y: auto;
-      padding: 12px 16px;
-      white-space: pre-wrap;
-      word-wrap: break-word;
-      line-height: 1.4;
-      outline: none;
+      overflow: hidden;
+      padding: 4px 6px;
+      background: #1a1a2e;
     }
-    .output.disconnected { opacity: 0.7; }
-    .output a {
-      color: #7dd3fc;
-      text-decoration: underline;
-    }
+    .terminal-wrap.disconnected { opacity: 0.55; }
+    .terminal-host { width: 100%; height: 100%; }
+    .terminal-host .xterm { height: 100%; }
+    .terminal-host .xterm-viewport { overflow-y: auto; }
+
     .mobile-composer {
       display: flex;
       gap: 6px;
@@ -152,14 +168,6 @@
       cursor: pointer;
     }
     @media (hover: none), (pointer: coarse) {
-      .output {
-        font-size: 12px;
-        line-height: 1.3;
-        padding: 8px 10px;
-        overflow-x: auto;
-        white-space: pre;
-        word-wrap: normal;
-      }
       .keys-bar button {
         min-width: 0;
         padding: 0 8px;
@@ -294,6 +302,82 @@
       box-shadow: none;
     }
 
+    .textview-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: #1a1a2e;
+      display: flex;
+      flex-direction: column;
+    }
+    .textview-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 16px;
+      background: #16213e;
+      border-bottom: 1px solid #0f3460;
+      flex: 0 0 auto;
+    }
+    .textview-header h2 { font-size: 13px; color: #53a8b6; font-weight: normal; }
+    .textview-header button {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      padding: 5px 14px;
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .textview-body {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 12px 14px;
+      margin: 0;
+      white-space: pre;
+      font-family: inherit;
+      font-size: 12px;
+      line-height: 1.4;
+      color: #e0e0e0;
+      /* Re-enable native iOS text selection + the "Copy" callout,
+         which the global reset disables. */
+      user-select: text;
+      -webkit-user-select: text;
+      -webkit-touch-callout: default;
+    }
+    .textview-footer {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      background: #16213e;
+      border-top: 1px solid #0f3460;
+      flex: 0 0 auto;
+    }
+    .textview-footer button {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      padding: 9px 14px;
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .textview-footer button:active { border-color: #e94560; color: #e94560; }
+    .textview-footer .textview-status {
+      margin-left: auto;
+      color: #95d5b2;
+      font-size: 12px;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .modal-overlay {
       position: fixed;
       top: 0; left: 0; right: 0; bottom: 0;
@@ -358,8 +442,7 @@
 <script type="importmap">
   {
     "imports": {
-      "vue": "https://unpkg.com/vue@3/dist/vue.esm-browser.js",
-      "ansi_up": "https://cdn.jsdelivr.net/npm/ansi_up@6.0.2/ansi_up.js"
+      "vue": "https://unpkg.com/vue@3/dist/vue.esm-browser.js"
     }
   }
 </script>
@@ -374,33 +457,30 @@
           <option value="claude">claude</option>
           <option value="codex">codex</option>
         </select>
-        <!-- TODO: move keyboard language settings into a dedicated config view. -->
         <span class="status" :class="statusClass">{{ statusText }}</span>
       </div>
     </div>
 
     <div class="sessions-bar">
-      <span v-for="s in sessions" :key="s.name" style="display:inline-flex;align-items:center;gap:2px;">
+      <span v-for="d in dirs" :key="d.name" class="dir">
         <button
-          :class="{ active: s.name === activeSession }"
-          @click="switchSession(s.name)"
-        >{{ s.name }}</button>
+          :class="{ active: d.session === activeSession, running: d.running }"
+          @click="openDir(d)"
+        >{{ d.name }}</button>
         <button
-          style="padding:4px 6px;color:#e94560;background:none;border:none;cursor:pointer;font-size:14px;"
-          @click.stop="closeSession(s.name)"
-          title="Close session"
-        >&times;</button>
+          v-if="d.running"
+          class="stop-btn"
+          @click.stop="stopSession(d.session)"
+          title="Detener sesión"
+        >&#9209;</button>
       </span>
       <button class="new-btn" @click="showNewModal = true">+ new</button>
     </div>
   </div>
 
-  <div
-    class="output"
-    :class="{ disconnected: !connected }"
-    ref="outputEl"
-    v-html="outputHtml"
-  ></div>
+  <div class="terminal-wrap" :class="{ disconnected: !connected }">
+    <div ref="terminalEl" class="terminal-host"></div>
+  </div>
 
   <div class="bottom-pane">
     <div class="mobile-composer" v-show="showMobileComposer">
@@ -412,7 +492,7 @@
         @input="resizeMobileComposer"
         @keydown.enter.exact.prevent="sendMobileComposer"
       ></textarea>
-      <button @click="sendMobileComposer" :disabled="!mobileComposerText.trim() || !activeSession">Send</button>
+      <button @click="sendMobileComposer" :disabled="!activeSession">Send</button>
     </div>
 
     <div class="keys-bar">
@@ -426,7 +506,15 @@
       </template>
       <template v-else>
         <button @click="toggleActionSet">⇄</button>
+        <button
+          class="composer-toggle"
+          :class="{ active: showMobileComposer }"
+          @click="toggleComposer"
+          title="Mostrar/ocultar campo de texto"
+        >⌨</button>
         <template v-if="actionSet === 'main'">
+          <button @click="copyTerminal" :disabled="!activeSession">{{ copied ? '✓' : 'Copy' }}</button>
+          <button @click="openTextView" :disabled="!activeSession">📄</button>
           <button @click="sendInput('/clear')" :disabled="!activeSession">Clear</button>
           <button @click="triggerImageUpload" :disabled="!activeSession || uploadInProgress">Img</button>
           <button @click="startVoiceRecording" :disabled="!activeSession || uploadInProgress">Mic</button>
@@ -457,20 +545,34 @@
     </div>
   </div>
 
+  <!-- Text view: plain-text overlay for native selection / copy -->
+  <div class="textview-overlay" v-if="showTextView">
+    <div class="textview-header">
+      <h2>Mantén pulsado para seleccionar y copiar</h2>
+      <button @click="closeTextView">Cerrar ✕</button>
+    </div>
+    <pre class="textview-body">{{ textViewContent }}</pre>
+    <div class="textview-footer">
+      <button @click="copyTextViewSelection">Copiar selección</button>
+      <button @click="copyTextViewAll">Copiar todo</button>
+      <span class="textview-status">{{ textViewStatus }}</span>
+    </div>
+  </div>
+
   <!-- New session modal -->
   <div class="modal-overlay" v-if="showNewModal" @click.self="showNewModal = false">
     <div class="modal">
       <h2>New session</h2>
       <input
         v-model="newDir"
-        @keydown.enter="createSession"
+        @keydown.enter="createFromModal"
         placeholder="/path/to/project"
         ref="newDirInput"
       />
       <div class="error" v-if="newSessionError">{{ newSessionError }}</div>
       <div class="actions">
         <button class="cancel" @click="showNewModal = false">Cancel</button>
-        <button class="confirm" @click="createSession">Create</button>
+        <button class="confirm" @click="createFromModal">Create</button>
       </div>
     </div>
   </div>
@@ -491,15 +593,26 @@
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+
 <script type="module">
   import { createApp, computed, ref, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
-  import { AnsiUp } from 'ansi_up'
+
+  // Raw escape sequences for the named keys exposed in the nav bar.
+  const KEY_SEQ = {
+    Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D',
+    Enter: '\r', Tab: '\t', Escape: '\x1b', BSpace: '\x7f', Delete: '\x1b[3~',
+    'C-c': '\x03', 'C-b': '\x02', 'C-d': '\x04',
+    'C-l': '\x0c', 'C-u': '\x15', 'C-w': '\x17',
+  }
 
   createApp({
     setup() {
-      const sessions = ref([])
-      const activeSession = ref(null)
-      const output = ref('')
+      const dirs = ref([])             // [{ name, session, running }]
+      const activeSession = ref(null)  // sanitized session name currently shown
+      const defaultSession = ref('agent')
       const connected = ref(false)
       const harness = ref('claude')
       const showNewModal = ref(false)
@@ -511,13 +624,17 @@
       const uploadProgress = ref(0)
       const uploadInProgress = ref(false)
       const uploadError = ref('')
+      const copied = ref(false)
+      const showTextView = ref(false)
+      const textViewContent = ref('')
+      const textViewStatus = ref('')
       const isRecording = ref(false)
       const recordingSeconds = ref(0)
-      const showMobileComposer = ref(true)
+      const showMobileComposer = ref(localStorage.getItem('tclaw_show_composer') === '1')
       const mobileComposerText = ref('')
       const actionSetStorageKey = 'tclaw_action_set'
       const actionSet = ref(localStorage.getItem(actionSetStorageKey) || 'main')
-      const outputEl = ref(null)
+      const terminalEl = ref(null)
       const mobileComposerEl = ref(null)
       const newDirInput = ref(null)
       const imageInputEl = ref(null)
@@ -530,9 +647,11 @@
       let micStream = null
       let recordingChunks = []
       let recordingTimer = null
+      let term = null
+      let fitAddon = null
+      let resizeObserver = null
       const apiBase = window.location.origin
       const authStorageKey = 'tclaw_auth_token'
-      const ansiUp = new AnsiUp()
 
       const statusClass = ref('status-disconnected')
       const statusText = ref('disconnected')
@@ -547,6 +666,151 @@
         }
       }
 
+      // --- terminal ----------------------------------------------------------
+
+      function fitTerminal() {
+        if (!fitAddon || !term) return
+        try {
+          fitAddon.fit()
+        } catch {
+          // container not measurable yet — ignore
+        }
+      }
+
+      function setupTerminal() {
+        const coarse = window.matchMedia('(pointer: coarse)').matches
+        term = new Terminal({
+          cursorBlink: true,
+          fontSize: coarse ? 11 : 14,
+          fontFamily: 'SF Mono, Fira Code, Menlo, Consolas, monospace',
+          scrollback: 5000,
+          smoothScrollDuration: 120,
+          theme: {
+            background: '#1a1a2e',
+            foreground: '#e0e0e0',
+            cursor: '#e94560',
+            selectionBackground: '#0f3460',
+          },
+        })
+        fitAddon = new FitAddon.FitAddon()
+        term.loadAddon(fitAddon)
+        term.loadAddon(new WebLinksAddon.WebLinksAddon())
+        term.open(terminalEl.value)
+
+        term.onData((data) => sendRaw(data))
+        term.onResize(() => sendResize())
+
+        fitTerminal()
+
+        resizeObserver = new ResizeObserver(() => fitTerminal())
+        resizeObserver.observe(terminalEl.value)
+      }
+
+      // --- websocket / input -------------------------------------------------
+
+      function sendRaw(data) {
+        if (!ws || ws.readyState !== WebSocket.OPEN || !data) return
+        ws.send(new TextEncoder().encode(data))
+      }
+
+      // sendInput pastes text via bracketed paste so embedded newlines stay
+      // literal, then optionally submits with Enter.
+      function sendInput(text, submit = true) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return
+        sendRaw('\x1b[200~' + text + '\x1b[201~')
+        if (submit) {
+          setTimeout(() => sendRaw('\r'), 120)
+        }
+      }
+
+      function sendText(text) {
+        sendRaw(text)
+      }
+
+      function sendKey(name) {
+        sendRaw(KEY_SEQ[name] || name)
+      }
+
+      // copyTerminal copies the current selection to the clipboard. With no
+      // selection it copies the visible screen — handy on mobile, where
+      // precise selection is awkward.
+      async function copyTerminal() {
+        if (!term) return
+        let text = term.getSelection()
+        if (!text) {
+          const buf = term.buffer.active
+          const lines = []
+          for (let i = 0; i < term.rows; i++) {
+            const line = buf.getLine(buf.viewportY + i)
+            if (line) lines.push(line.translateToString(true))
+          }
+          text = lines.join('\n').replace(/\s+$/, '')
+        }
+        if (!text) return
+        try {
+          await navigator.clipboard.writeText(text)
+          copied.value = true
+          setTimeout(() => { copied.value = false }, 1200)
+        } catch {
+          uploadError.value = 'No se pudo copiar'
+        }
+      }
+
+      // openTextView snapshots the terminal buffer (screen + scrollback) into
+      // a plain-text overlay where native iOS selection / copy works.
+      function openTextView() {
+        if (!term) return
+        const buf = term.buffer.active
+        const lines = []
+        for (let i = 0; i < buf.length; i++) {
+          const line = buf.getLine(i)
+          lines.push(line ? line.translateToString(true) : '')
+        }
+        textViewContent.value = lines.join('\n').replace(/\s+$/, '')
+        showTextView.value = true
+      }
+
+      function closeTextView() {
+        showTextView.value = false
+        textViewStatus.value = ''
+      }
+
+      function flashTextViewStatus(msg) {
+        textViewStatus.value = msg
+        setTimeout(() => {
+          if (textViewStatus.value === msg) textViewStatus.value = ''
+        }, 1600)
+      }
+
+      async function copyTextViewSelection() {
+        const sel = (window.getSelection && window.getSelection().toString()) || ''
+        if (!sel) {
+          flashTextViewStatus('Nada seleccionado')
+          return
+        }
+        try {
+          await navigator.clipboard.writeText(sel)
+          flashTextViewStatus('Selección copiada ✓')
+        } catch {
+          flashTextViewStatus('No se pudo copiar')
+        }
+      }
+
+      async function copyTextViewAll() {
+        if (!textViewContent.value) return
+        try {
+          await navigator.clipboard.writeText(textViewContent.value)
+          flashTextViewStatus('Todo copiado ✓')
+        } catch {
+          flashTextViewStatus('No se pudo copiar')
+        }
+      }
+
+      function sendResize() {
+        if (!ws || ws.readyState !== WebSocket.OPEN || !term) return
+        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+      }
+
       function currentAuthToken() {
         return authTokenInput.value.trim()
       }
@@ -558,18 +822,13 @@
       }
 
       function setUnauthorized() {
-        if (!currentAuthToken()) {
-          authError.value = ''
-        } else {
-          authError.value = 'Invalid token'
-        }
+        authError.value = currentAuthToken() ? 'Invalid token' : ''
         showAuthModal.value = true
       }
 
       async function apiFetch(path, options = {}) {
         const opts = { ...options }
         opts.headers = authHeaders(options.headers || {})
-
         const res = await fetch(`${apiBase}${path}`, opts)
         if (res.status === 401) {
           setUnauthorized()
@@ -578,22 +837,12 @@
       }
 
       async function saveAuthToken() {
-        const token = currentAuthToken()
-        localStorage.setItem(authStorageKey, token)
+        localStorage.setItem(authStorageKey, currentAuthToken())
         authError.value = ''
         showAuthModal.value = false
-
         await fetchConfig()
-        await fetchSessions()
-        if (sessions.value.length > 0) {
-          switchSession(activeSession.value || sessions.value[0].name)
-        }
-      }
-
-      async function fetchSessions() {
-        const res = await apiFetch('/api/sessions')
-        if (!res.ok) return
-        sessions.value = await res.json()
+        await fetchDirs()
+        await routeFromURL()
       }
 
       async function fetchConfig() {
@@ -601,6 +850,13 @@
         if (!res.ok) return
         const cfg = await res.json()
         harness.value = cfg.harness || 'claude'
+        defaultSession.value = cfg.default_session || 'agent'
+      }
+
+      async function fetchDirs() {
+        const res = await apiFetch('/api/dirs')
+        if (!res.ok) return
+        dirs.value = await res.json()
       }
 
       async function saveHarness() {
@@ -619,11 +875,16 @@
         return cfg
       }
 
-      function connectWS(name) {
+      function cancelReconnect() {
         if (reconnectTimer) {
           clearTimeout(reconnectTimer)
           reconnectTimer = null
         }
+        reconnectAttempts = 0
+      }
+
+      function connectWS(name) {
+        cancelReconnect()
         if (ws) {
           ws.close()
           ws = null
@@ -634,42 +895,52 @@
 
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
         const token = currentAuthToken()
-        const url = new URL(`${proto}//${window.location.host}/ws/${name}`)
+        const url = new URL(`${proto}//${window.location.host}/ws/${encodeURIComponent(name)}`)
         if (token) {
           url.searchParams.set('token', token)
         }
         const newWs = new WebSocket(url.toString())
+        newWs.binaryType = 'arraybuffer'
         ws = newWs
+        let opened = false
 
         newWs.onopen = () => {
           if (ws !== newWs) return
+          opened = true
           connected.value = true
           reconnectAttempts = 0
           updateStatus()
+          fitTerminal()
+          sendResize()
+          fetchDirs()
         }
 
         newWs.onmessage = (e) => {
-          if (ws !== newWs) return
-          const msg = JSON.parse(e.data)
-
-          if (msg.type === 'snapshot' || msg.type === 'update') {
-            output.value = msg.text
+          if (ws !== newWs || !term) return
+          if (e.data instanceof ArrayBuffer) {
+            term.write(new Uint8Array(e.data))
+          } else {
+            term.write(e.data)
           }
-
-          updateStatus()
-          nextTick(() => {
-            if (outputEl.value) {
-              outputEl.value.scrollTop = outputEl.value.scrollHeight
-            }
-          })
         }
 
         newWs.onclose = () => {
           if (ws !== newWs) return
           connected.value = false
           updateStatus()
-          scheduleReconnect(name)
+          if (opened) {
+            scheduleReconnect(name)
+          } else {
+            // Never connected — the session may have ended. Only retry if a
+            // live session for it still exists.
+            fetchDirs().then(() => {
+              const d = dirs.value.find((x) => x.session === name)
+              if (d && d.running) scheduleReconnect(name)
+            })
+          }
         }
+
+        newWs.onerror = () => newWs.close()
       }
 
       function scheduleReconnect(name) {
@@ -685,17 +956,10 @@
         }, delay)
       }
 
-      function switchSession(name) {
-        activeSession.value = name
-        connectWS(name)
-      }
-
-      function focusTerminal() {
-        mobileComposerEl.value?.focus()
-      }
+      // --- session / directory routing --------------------------------------
 
       function sanitizeSessionName(dir) {
-        let s = dir.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        let s = dir.normalize('NFD').replace(/[̀-ͯ]/g, '')
         s = s.replace(/[\/\\ ]/g, '-')
         s = s.replace(/[^a-zA-Z0-9-]/g, '')
         s = s.replace(/-{2,}/g, '-')
@@ -704,20 +968,106 @@
         return s || 'session'
       }
 
-      function sendText(text) {
-        if (!text || !ws) return
-        ws.send(JSON.stringify({ type: 'text', text }))
+      // selectSession points the UI + URL at a session and connects to it.
+      function selectSession(name) {
+        activeSession.value = name
+        const path = '/' + encodeURIComponent(name)
+        if (window.location.pathname !== path) {
+          history.pushState({}, '', path)
+        }
+        if (term) term.reset()
+        connectWS(name)
       }
 
-      function sendCommand(text) {
-        if (!text || !ws) return
-        ws.send(JSON.stringify({ type: 'input', text, submit_key: 'Enter' }))
+      // createSessionWithDir creates (or reuses) a session for a directory.
+      async function createSessionWithDir(dir) {
+        const res = await apiFetch('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dir })
+        })
+        if (res.ok) {
+          const s = await res.json()
+          await fetchDirs()
+          selectSession(s.name)
+          return true
+        }
+        if (res.status === 409) {
+          await fetchDirs()
+          selectSession(sanitizeSessionName(dir))
+          return true
+        }
+        return false
       }
 
-      function sendInput(text, submitKey = 'Enter') {
-        if (!text || !ws) return
-        ws.send(JSON.stringify({ type: 'input', text, submit_key: submitKey }))
+      // openDir handles a tap on a directory in the bar.
+      async function openDir(d) {
+        if (d.running) {
+          selectSession(d.session)
+        } else {
+          await createSessionWithDir(d.name)
+        }
       }
+
+      async function openSessionByName(name) {
+        const d = dirs.value.find((x) => x.session === name)
+        if (d) {
+          await openDir(d)
+          return
+        }
+        if (name === defaultSession.value) {
+          // Default has no folder yet — create it.
+          await createSessionWithDir(defaultSession.value)
+          return
+        }
+        // Unknown path → fall back to the default session.
+        await openSessionByName(defaultSession.value)
+      }
+
+      // routeFromURL resolves the current URL path to a session.
+      async function routeFromURL() {
+        const seg = decodeURIComponent(
+          (window.location.pathname || '/').replace(/^\/+/, '').split('/')[0] || ''
+        )
+        await openSessionByName(seg || defaultSession.value)
+      }
+
+      // stopSession kills the PTY session inside tclaw. The folder stays;
+      // it just has no live session anymore.
+      async function stopSession(name) {
+        await apiFetch(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' })
+        if (activeSession.value === name) {
+          cancelReconnect()
+          if (ws) { ws.close(); ws = null }
+          connected.value = false
+          updateStatus()
+          if (term) term.reset()
+        }
+        await fetchDirs()
+      }
+
+      async function createFromModal() {
+        const dir = newDir.value.trim()
+        if (!dir) return
+        newSessionError.value = ''
+        const ok = await createSessionWithDir(dir)
+        if (ok) {
+          showNewModal.value = false
+          newDir.value = ''
+        } else {
+          newSessionError.value = 'Could not create session'
+          await fetchDirs()
+        }
+      }
+
+      watch(showNewModal, (v) => {
+        if (v) {
+          newSessionError.value = ''
+          nextTick(() => newDirInput.value?.focus())
+        }
+      })
+
+      // --- composer / keys ---------------------------------------------------
 
       const uploadStatusText = computed(() => {
         if (uploadError.value) return uploadError.value
@@ -725,18 +1075,11 @@
         return ''
       })
 
-      const outputHtml = computed(() => ansiUp.ansi_to_html(output.value || ''))
-
       const recordingDurationText = computed(() => {
         const minutes = Math.floor(recordingSeconds.value / 60)
         const seconds = recordingSeconds.value % 60
         return `${minutes}:${String(seconds).padStart(2, '0')}`
       })
-
-      function sendKey(key) {
-        if (!key || !ws) return
-        ws.send(JSON.stringify({ type: 'key', text: key }))
-      }
 
       function resizeMobileComposer() {
         const el = mobileComposerEl.value
@@ -749,6 +1092,17 @@
       function toggleActionSet() {
         actionSet.value = actionSet.value === 'main' ? 'nav' : 'main'
         localStorage.setItem(actionSetStorageKey, actionSet.value)
+      }
+
+      function toggleComposer() {
+        showMobileComposer.value = !showMobileComposer.value
+        localStorage.setItem('tclaw_show_composer', showMobileComposer.value ? '1' : '0')
+        if (showMobileComposer.value) {
+          nextTick(() => {
+            resizeMobileComposer()
+            mobileComposerEl.value?.focus()
+          })
+        }
       }
 
       function sendMobileComposer() {
@@ -769,76 +1123,15 @@
 
       function insertComposerNewline() {
         if (!activeSession.value) return
-        sendText('\n')
+        sendInput('\n', false)
         nextTick(() => mobileComposerEl.value?.focus())
       }
 
-      async function closeSession(name) {
-        if (!confirm(`Close session "${name}"?`)) return
-        await apiFetch(`/api/sessions/${name}`, { method: 'DELETE' })
-        if (activeSession.value === name) {
-          if (reconnectTimer) {
-            clearTimeout(reconnectTimer)
-            reconnectTimer = null
-          }
-          reconnectAttempts = 0
-          if (ws) { ws.close(); ws = null }
-          activeSession.value = null
-          output.value = ''
-          connected.value = false
-          updateStatus()
-        }
-        await fetchSessions()
-        if (!activeSession.value && sessions.value.length > 0) {
-          switchSession(sessions.value[0].name)
-        }
+      function focusComposer() {
+        mobileComposerEl.value?.focus()
       }
 
-      async function createSession() {
-        const dir = newDir.value.trim()
-        if (!dir) return
-        newSessionError.value = ''
-
-        const res = await apiFetch('/api/sessions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dir })
-        })
-
-        if (res.ok) {
-          const s = await res.json()
-          await fetchSessions()
-          switchSession(s.name)
-          showNewModal.value = false
-          newDir.value = ''
-          newSessionError.value = ''
-          return
-        }
-
-        const errorText = (await res.text()).trim() || 'Could not create session'
-        await fetchSessions()
-
-        if (res.status === 409) {
-          const existingName = sanitizeSessionName(dir)
-          const existing = sessions.value.find((s) => s.name === existingName)
-          if (existing) {
-            switchSession(existing.name)
-            showNewModal.value = false
-            newDir.value = ''
-            newSessionError.value = ''
-            return
-          }
-        }
-
-        newSessionError.value = errorText
-      }
-
-      watch(showNewModal, (v) => {
-        if (v) {
-          newSessionError.value = ''
-          nextTick(() => newDirInput.value?.focus())
-        }
-      })
+      // --- uploads -----------------------------------------------------------
 
       function triggerImageUpload() {
         uploadError.value = ''
@@ -896,7 +1189,7 @@
             if (data.transcription_error && !data.transcript) {
               uploadError.value = data.transcription_error
             }
-            nextTick(() => focusTerminal())
+            nextTick(() => focusComposer())
             setTimeout(() => {
               if (!uploadInProgress.value) {
                 uploadProgress.value = 0
@@ -917,6 +1210,8 @@
 
         xhr.send(form)
       }
+
+      // --- voice recording ---------------------------------------------------
 
       function startRecordingTimer() {
         stopRecordingTimer()
@@ -1071,15 +1366,12 @@
         }
       }
 
+      // --- lifecycle ---------------------------------------------------------
+
       function reconnectIfNeeded() {
         if (!activeSession.value) return
-        // ws is missing or not OPEN — try reconnecting now, no backoff
         if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
-          if (reconnectTimer) {
-            clearTimeout(reconnectTimer)
-            reconnectTimer = null
-          }
-          reconnectAttempts = 0
+          cancelReconnect()
           connectWS(activeSession.value)
         }
       }
@@ -1094,37 +1386,56 @@
         reconnectIfNeeded()
       }
 
+      function onPopState() {
+        routeFromURL()
+      }
+
       onMounted(() => {
+        setupTerminal()
         document.addEventListener('visibilitychange', onVisibilityChange)
         window.addEventListener('online', onOnline)
-        fetchConfig()
-        fetchSessions().then(() => {
-          if (sessions.value.length > 0) {
-            switchSession(sessions.value[0].name)
-          }
-        })
+        window.addEventListener('popstate', onPopState)
+        ;(async () => {
+          await fetchConfig()
+          await fetchDirs()
+          await routeFromURL()
+        })()
         nextTick(() => {
           resizeMobileComposer()
-          mobileComposerEl.value?.focus()
+          fitTerminal()
         })
       })
 
       onBeforeUnmount(() => {
         document.removeEventListener('visibilitychange', onVisibilityChange)
         window.removeEventListener('online', onOnline)
-        if (reconnectTimer) {
-          clearTimeout(reconnectTimer)
-          reconnectTimer = null
+        window.removeEventListener('popstate', onPopState)
+        cancelReconnect()
+        if (resizeObserver) {
+          resizeObserver.disconnect()
+          resizeObserver = null
         }
         cancelVoiceRecording()
         stopMicStream()
+        if (term) {
+          term.dispose()
+          term = null
+        }
       })
 
       return {
-        sessions, activeSession, output, outputHtml, connected, harness,
-        showNewModal, showAuthModal, newDir, newSessionError, authError, authTokenInput, uploadProgress, uploadInProgress, uploadError, uploadStatusText, isRecording, recordingDurationText, showMobileComposer, mobileComposerText, actionSet, outputEl, mobileComposerEl, newDirInput, imageInputEl,
+        dirs, activeSession, defaultSession, connected, harness,
+        showNewModal, showAuthModal, newDir, newSessionError, authError, authTokenInput,
+        uploadProgress, uploadInProgress, uploadError, uploadStatusText, copied,
+        showTextView, textViewContent, textViewStatus,
+        isRecording, recordingDurationText, showMobileComposer, mobileComposerText, actionSet,
+        terminalEl, mobileComposerEl, newDirInput, imageInputEl,
         statusClass, statusText,
-        switchSession, sendKey, sendText, sendCommand, sendInput, closeSession, createSession, triggerImageUpload, handleImageSelected, startVoiceRecording, cancelVoiceRecording, finishVoiceRecording, saveHarness, saveAuthToken, resizeMobileComposer, toggleActionSet, sendMobileComposer, insertComposerNewline
+        openDir, stopSession, createFromModal, sendKey, sendText, sendInput, copyTerminal,
+        openTextView, closeTextView, copyTextViewSelection, copyTextViewAll,
+        triggerImageUpload, handleImageSelected, startVoiceRecording, cancelVoiceRecording,
+        finishVoiceRecording, saveHarness, saveAuthToken, resizeMobileComposer, toggleActionSet,
+        toggleComposer, sendMobileComposer, insertComposerNewline
       }
     }
   }).mount('#app')

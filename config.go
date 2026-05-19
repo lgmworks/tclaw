@@ -12,12 +12,24 @@ const configPath = "config.json"
 const configExamplePath = "config.example.json"
 
 type AppConfig struct {
-	Harness string `json:"harness"`
+	Harness        string   `json:"harness"`
+	DefaultSession string   `json:"default_session"`
+	ExcludeDirs    []string `json:"exclude_dirs"`
+}
+
+// defaultExcludeDirs are directories never listed as projects by /api/dirs:
+// tclaw's own frontend, upload storage, the PoC and common infra dirs.
+var defaultExcludeDirs = []string{
+	"web", "uploads", "pty-experiment", "scripts", "skills", "claude", "tls", "data",
 }
 
 var (
 	configMu  sync.RWMutex
-	appConfig = AppConfig{Harness: "claude"}
+	appConfig = AppConfig{
+		Harness:        "claude",
+		DefaultSession: "agent",
+		ExcludeDirs:    defaultExcludeDirs,
+	}
 )
 
 func loadConfig(path string) error {
@@ -90,5 +102,12 @@ func (c *AppConfig) normalize() {
 	c.Harness = strings.TrimSpace(c.Harness)
 	if c.Harness == "" {
 		c.Harness = "claude"
+	}
+	c.DefaultSession = strings.TrimSpace(c.DefaultSession)
+	if c.DefaultSession == "" {
+		c.DefaultSession = "agent"
+	}
+	if c.ExcludeDirs == nil {
+		c.ExcludeDirs = defaultExcludeDirs
 	}
 }
