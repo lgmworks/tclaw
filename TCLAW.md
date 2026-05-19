@@ -15,7 +15,7 @@ hace backup en `tclaw.bak` y reinicia el servicio):
 Requiere el alias SSH `openclaw` en `~/.ssh/config`. Target en el server:
 `/home/openclaw/tclaw/` (binario `tclaw`, dir `web/`, servicio `tclaw.service`).
 
-Setup inicial del servidor:
+Setup inicial del servidor (requiere **`tmux`** instalado — `apt install tmux`):
 
 `/etc/systemd/system/tclaw.service` → usar `tclaw.service.example`
 
@@ -54,10 +54,10 @@ ssh openclaw 'sudo systemctl stop tclaw'
 ssh openclaw 'sudo systemctl start tclaw'
 ```
 
-**Importante:** con la arquitectura PTY directo, reiniciar/parar el servicio
-**mata todas las sesiones activas** (los procesos `claude`/`codex` son hijos de
-tclaw). El transcript de cada conversación igual queda en disco, recuperable
-con `claude --resume` al recrear la sesión.
+**Nota:** las sesiones viven en el servidor tmux, no como hijos de tclaw.
+Reiniciar/parar el servicio **no las mata** — al arrancar, tclaw re-adopta
+(`adoptExistingSessions`) las sesiones tmux que sigan vivas. Sí las mata
+`tmux kill-server` o reiniciar la máquina.
 
 ### rollback
 

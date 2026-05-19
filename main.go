@@ -43,6 +43,9 @@ func main() {
 		log.Printf("warning: could not load config: %v", err)
 	}
 
+	// Re-attach to tmux sessions that survived a previous tclaw run.
+	adoptExistingSessions()
+
 	mux := http.NewServeMux()
 
 	// REST API

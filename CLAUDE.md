@@ -2,43 +2,51 @@
 
 ## Qué es
 
-Servidor Go que lanza **Claude Code** o **Codex** dentro de un **PTY** y los expone como una terminal real en el browser, controlable desde cualquier dispositivo (Mac, Windows, iPhone). Sin API keys extra para el harness, sin SDK — usa tu suscripción Claude Max / Codex directamente.
+Servidor Go que lanza **Claude Code** o **Codex** dentro de una **sesión tmux** y los expone como una terminal en el browser, controlable desde cualquier dispositivo (Mac, Windows, iPhone). Sin API keys extra para el harness, sin SDK — usa tu suscripción Claude Max / Codex directamente.
 
-## Arquitectura (PTY directo)
+## Arquitectura (tmux)
 
 ```
-Browser (Vue + xterm.js) ←WebSocket binario→ tclaw (Go) ←PTY (creack/pty)→ claude / codex
+Browser (Vue + ansi_up) ←WebSocket JSON→ tclaw (Go) ←tmux send-keys / capture-pane→ claude / codex
 ```
 
-- Cada sesión es un proceso `claude`/`codex` lanzado **directamente** con `pty.Start()` — sin tmux ni multiplexor en medio.
-- Una goroutine lectora drena el PTY y **hace broadcast de los bytes crudos** a todos los clientes WebSocket conectados a esa sesión, en cuanto el harness produce salida (sin polling).
-- El frontend usa **xterm.js**: recibe los bytes crudos y los renderiza como una terminal real (colores ANSI, cursor, alt-screen, todo nativo).
-- Cada sesión mantiene un **ring buffer de 256KB** con la salida reciente; al conectar (o reconectar) un cliente, se le manda ese buffer para que xterm.js repinte el estado actual.
-- Múltiples clientes pueden conectarse a la **misma sesión** simultáneamente.
-- El input del browser (teclado, botones) viaja como **frames binarios** = bytes crudos que se escriben directo al PTY. El `resize` viaja como un frame de texto JSON.
+- Cada sesión es una **sesión de tmux** (`tmux new-session -d`) con el harness corriendo dentro.
+- tclaw **no se adjunta** a tmux: lo usa como proxy de texto. Hay un `Hub` por sesión (`hub.go`) con una goroutine que hace **polling de `tmux capture-pane`** cada 200ms (rápido) / 2s (idle); cuando el snapshot cambia, lo difunde a los clientes WebSocket como JSON.
+- El frontend usa **ansi_up**: convierte el snapshot (con códigos ANSI de color) a HTML y lo pinta en un `<div>` normal. El scroll es el **scroll nativo del navegador** — suave en móvil.
+- El input del browser viaja como **JSON de control** y tclaw lo traduce a `tmux send-keys` / `paste-buffer`.
+- Múltiples clientes pueden conectarse a la **misma sesión** simultáneamente (comparten el `Hub`).
 
-### Historia: por qué se migró desde tmux
+### Por qué tmux y no PTY directo
 
-La versión anterior usaba `tmux` como proxy de texto (`send-keys` / `capture-pane`, polling cada 200ms, snapshots completos). Funcionaba, pero el browser no interpretaba bien las secuencias ANSI y no había resize real. Se migró a PTY directo + xterm.js: render nativo de la terminal, resize dinámico y menor latencia (sin polling).
+Hubo una etapa con **PTY directo + xterm.js** (`pty.Start()`, stream de bytes crudos, render en canvas). Daba render ANSI perfecto y resize real, pero **el scroll de xterm.js en móvil era insoportable** (viewport propio en un canvas, sin scroll nativo). Se volvió a tmux para recuperar el render con ansi_up en un `<div>` con scroll nativo.
 
-**Trade-off aceptado:** con PTY directo el harness es proceso hijo de tclaw. Si tclaw se reinicia o cae (deploy, `systemctl restart`, crash), **todas las sesiones mueren**. Una desconexión del WebSocket (cerrar el browser, perder señal) **no** mata la sesión — el harness sigue vivo y el ring buffer cubre la reconexión. El transcript de Claude Code igual queda en disco (`~/.claude/projects/...`), recuperable con `claude --resume`.
+`ansi_up` no emula una terminal: solo colorea texto. Necesita un **snapshot plano de la pantalla**, que es justo lo que da `tmux capture-pane` (tmux hace de emulador). Por eso tmux y ansi_up van en paquete: no se pueden separar.
+
+**Ventaja recuperada — persistencia:** las sesiones viven en el servidor tmux, no como hijos de tclaw. Si tclaw se reinicia o cae (deploy, `systemctl restart`, crash), **las sesiones siguen vivas**; `adoptExistingSessions()` las re-adopta al arrancar. Una desconexión del WebSocket tampoco mata nada.
+
+**Trade-off aceptado:** sin emulador de terminal en el cliente, lo que se ve es lo que `capture-pane` aplana — el polling añade ~200ms de latencia y el diff de cambios solo compara las últimas 30 líneas.
 
 ## Estructura del proyecto
 
 ```
 /Users/lgm/Sites/tclaw/
-├── main.go           — HTTP server, rutas, CORS, sirve frontend, carga .env y config
-├── session.go        — sesión = proceso harness en un PTY: crear, leer, escribir, resize, matar
-├── client.go         — conexión WebSocket individual: read/write pumps, frames binarios + control JSON
+├── main.go           — HTTP server, rutas, CORS, sirve frontend, carga .env y config, adopta sesiones
+├── session.go        — sesión = sesión tmux: crear, send-keys/paste, capture, resize, matar
+├── hub.go            — un Hub por sesión: clientes WebSocket + loop de polling capture-pane (con pausa)
+├── diff.go           — hasChanged (diff de las últimas 30 líneas) e isReady (¿harness esperando input?)
+├── client.go         — conexión WebSocket individual: read/write pumps, mensajes JSON
 ├── api.go            — endpoints REST + WebSocket handler + uploads + sanitización
-├── config.go         — config persistente (config.json) con harness seleccionado
+├── config.go         — config persistente (config.json): harness, default_session, exclude_dirs
 ├── transcription.go  — cliente HTTP a OpenAI Whisper para transcribir audio subido
 ├── auth.go           — middleware de auth opcional por token (AUTH_TOKEN)
 ├── web/
-│   └── index.html    — frontend Vue 3 (sin build) + xterm.js (CDN)
-├── pty-experiment/   — PoC original de la migración a PTY (módulo Go aparte, histórico)
+│   └── index.html    — frontend Vue 3 (sin build) + ansi_up (CDN)
+├── pty-experiment/   — PoC histórico de la etapa PTY (módulo Go aparte)
+├── deploy.sh         — cross-compila, sube binario + web/ al server openclaw, reinicia el servicio
+├── build.sh          — ./build.sh [local|prod]
+├── monet-setup.sh    — setup de una 2da instancia
 ├── config.example.json
-├── config.json       — gitignored, persiste el harness elegido
+├── config.json       — gitignored, persiste la config
 ├── .env              — gitignored, contiene OPENAI_API_KEY para transcripción
 ├── go.mod / go.sum
 └── .gitignore
@@ -52,12 +60,13 @@ La versión anterior usaba `tmux` como proxy de texto (`send-keys` / `capture-pa
 GET    /api/sessions                        → lista sesiones activas
 POST   /api/sessions                        → crear sesión { "dir": "mi-proyecto" }
                                               dir es relativo al CWD de tclaw, crea la carpeta si no existe
-DELETE /api/sessions/:name                  → cerrar sesión (mata el proceso harness)
+DELETE /api/sessions/:name                  → cerrar sesión (tmux kill-session)
 POST   /api/sessions/:name/uploads          → subir imagen o audio (multipart, campo "file")
                                               audio se transcribe automáticamente vía OpenAI
 
-GET    /api/config                          → { "harness": "claude" | "codex" }
+GET    /api/config                          → { "harness", "default_session", "exclude_dirs" }
 PUT    /api/config                          → cambiar harness, persiste en config.json
+GET    /api/dirs                            → lista de carpetas-proyecto bajo el CWD de tclaw
 ```
 
 ### WebSocket
@@ -66,15 +75,25 @@ PUT    /api/config                          → cambiar harness, persiste en con
 WS /ws/:session_name
 ```
 
-**Browser → tclaw:**
-- **Frame binario** → bytes crudos que se escriben directo al PTY (keystrokes, secuencias ANSI, paste).
-- **Frame de texto JSON** → mensaje de control:
-  ```json
-  { "type": "resize", "cols": 120, "rows": 40 }
-  ```
+**Browser → tclaw** (mensajes JSON de texto):
 
-**tclaw → Browser:**
-- **Frame binario** → bytes crudos de salida del PTY. Al conectar, el primer frame es el ring buffer de replay. xterm.js los escribe tal cual.
+```json
+{ "type": "input",  "text": "...", "submit_key": "Enter" }   paste de texto + tecla de envío
+{ "type": "text",   "text": "..." }                          texto literal (tmux send-keys -l)
+{ "type": "key",    "text": "C-c" }                           una tecla tmux (tmux send-keys)
+{ "type": "resize", "cols": 120, "rows": 40 }                 resize del window de tmux
+{ "type": "pause" }  /  { "type": "resume" }                  pausa / reanuda el polling
+```
+
+`submit_key: "none"` pega el texto **sin enviar** (lo usa el botón NL).
+
+**tclaw → Browser** (mensajes JSON):
+
+```json
+{ "type": "snapshot", "text": "..." }                  pantalla completa (al conectar / al reanudar)
+{ "type": "update",   "text": "...", "ready": true }   pantalla completa, cuando cambió
+{ "type": "sync",     "paused": true }                 estado de la pausa del polling
+```
 
 ## Cómo correr
 
@@ -85,45 +104,42 @@ cd /Users/lgm/Sites/tclaw
 # Abre http://localhost:8080
 ```
 
+Necesita **`tmux` instalado**. Opcional: configurar `~/.tmux.conf` para shift+enter (ver `README.md`).
+
 Para exponerlo a un teléfono en pruebas:
 
 ```bash
 cloudflared tunnel --url http://localhost:8080
 ```
 
-Ya **no** se necesita configurar `~/.tmux.conf` — no hay tmux.
-
 ## Frontend (web/index.html)
 
-Vue 3 sin build (importmap desde unpkg) + **xterm.js** cargado por `<script>` desde CDN (jsdelivr). Optimizado para móvil.
+Vue 3 sin build (importmap desde unpkg) + **ansi_up** (CDN jsdelivr). Optimizado para móvil.
 
 Funcionalidades:
-- **Terminal xterm.js**: render real de la salida del harness, con `FitAddon` (ajusta cols/rows al tamaño del contenedor y reporta el resize al backend) y `WebLinksAddon` (URLs clicables).
+- **Terminal ansi_up**: pinta el snapshot de `capture-pane` como HTML en un `<div>` con scroll nativo.
+- **Vista congelada al leer scrollback**: si subes a leer (o seleccionas texto), la vista no se repinta — el snapshot nuevo se guarda en buffer y se aplica al volver al fondo. Evita que un update te tire al bottom mientras lees.
+- **Botón pausar/reanudar sync**: detiene/reanuda el polling de `capture-pane` en el server.
+- **Botón resize (Fit)**: manda `resize-window` de tmux al ancho real de la pantalla. También se dispara solo al conectar y al rotar el móvil.
 - **Selector de harness** (claude / codex) en el header — persiste vía `/api/config`.
-- **Barra de sesiones** con botón `+ new` y `×` para cerrar.
-- **Modal de nueva sesión** que pide el path del directorio.
-- **Modal de token** para auth (si el server tiene `AUTH_TOKEN`).
-- **Input de escritorio**: `term.onData` manda cada keystroke (y el paste de xterm) como frame binario al PTY.
-- **Composer móvil** (textarea + Send) para teclados táctiles. Manda el texto vía bracketed paste.
-- **Action set "main"**: Clear, Img (subir imagen), Mic (grabar audio).
-- **Action set "nav"**: arrow pad ↑↓←→, Enter, Tab, Esc, ⌫, Del, Ctrl+C/B/D/L/U/W. Se alternan con un botón ⇄.
-- **Subida de imágenes**: tras subirla manda al harness `@<full_path> ` (sin Enter, para que el usuario complete el prompt).
-- **Grabación de voz**: `MediaRecorder` (webm/opus), sube el blob, espera la transcripción y la manda como `<transcript>...</transcript>`.
-- **Indicador de estado**: connected / disconnected.
-- **Reconexión WebSocket** automática con backoff exponencial + reintento inmediato en `visibilitychange` / `online`.
+- **Barra de carpetas** con estados de color (parada / corriendo / activa) y routing por path (`/proyecto`).
+- **Modal de nueva sesión** y **modal de token** (auth).
+- **Composer móvil** (textarea + Send) para teclados táctiles.
+- **Action set "main"**: Sync, Fit, Copy, Clear, Img, Mic. **Action set "nav"**: arrow pad, Enter, Tab, Esc, ⌫, Del, Ctrl+C/B/D/L/U/W. Se alternan con ⇄.
+- **Subida de imágenes** (`@<full_path> `), **grabación de voz** (`MediaRecorder` → transcripción → `<transcript>...</transcript>`).
+- **Reconexión WebSocket** automática con backoff exponencial + reintento en `visibilitychange` / `online`.
 
 ## Dependencias
 
 Go (`go.mod`):
-- `github.com/creack/pty` — manejo del PTY
 - `github.com/gorilla/websocket`
 - `github.com/joho/godotenv`
 - `golang.org/x/text`
 
 Sistema:
+- **`tmux`** — tclaw lanza y consulta cada sesión vía tmux.
 - `claude` (Claude Code CLI) y/o `codex` instalados y autenticados — el harness se elige desde el frontend.
 - `OPENAI_API_KEY` en `.env` si se quiere usar transcripción de audio (opcional). Modelo por defecto: `gpt-4o-mini-transcribe`, override con `TCLAW_TRANSCRIBE_MODEL`.
-- **Ya no se necesita tmux.**
 
 ## Detalles técnicos
 
@@ -132,32 +148,45 @@ Sistema:
 - `claude` → `claude --dangerously-skip-permissions`
 - `codex`  → `codex --dangerously-bypass-approvals-and-sandbox`
 
-Los flags hacen que tclaw no tenga que mediar en cada prompt de permisos. Asume que ya confías en el directorio.
+Los flags hacen que tclaw no tenga que mediar en cada prompt de permisos. El harness se arranca con `send-keys` dentro del shell de tmux, así que hereda el PATH/entorno del usuario.
 
-### Ciclo de vida de una sesión (`session.go`)
-- `createSession` resuelve el dir, lanza `pty.Start(cmd)` con `TERM=xterm-256color`, registra la sesión y arranca dos goroutines:
-  - `readLoop` — lee el PTY en chunks, lo mete al ring buffer y hace broadcast a los clientes.
-  - `waitLoop` — `cmd.Wait()`; al morir el proceso, marca la sesión cerrada, cierra los clientes y la borra del mapa.
-- `Write` escribe bytes crudos al PTY. `Resize` aplica `pty.Setsize`. `Close` mata el proceso (waitLoop hace el resto).
+### Ciclo de vida de una sesión (`session.go` + `hub.go`)
+- `createSession` resuelve el dir, hace `tmux new-session -d`, `set-option window-size manual` (para que el resize aguante) y `send-keys` del comando del harness + `Enter`.
+- Al conectar el primer cliente, `getOrCreateHub` crea el `Hub` y arranca `pollLoop`.
+- `deleteSession` hace `tmux kill-session`; `removeHub` para el `pollLoop`.
+- `adoptExistingSessions()` corre al arrancar tclaw: lista las sesiones tmux vivas y las registra (persistencia ante reinicios).
+
+### Hub y polling (`hub.go`)
+- `pollLoop` hace `capture-pane` cada `pollFast` (200ms) cuando hay actividad y `pollSlow` (2s) cuando el harness está idle. `inputCh` lo acelera tras un input.
+- `captureAndBroadcast` compara con el snapshot previo (`diff.go`) y, si cambió, difunde un `update`.
+- **Pausa**: `pauseCh` + `paused atomic.Bool`. Pausado, el loop no hace `capture-pane`. Al reanudar manda un `snapshot` fresco. El estado se difunde como `{type:"sync"}`.
+
+### diff.go
+- `hasChanged` compara las **últimas 30 líneas** de dos snapshots (barato; cambios típicos del harness son al final).
+- `isReady` heurística: detecta si el harness está esperando input (prompt `❯`/`>`, "? for shortcuts").
 
 ### Clientes WebSocket (`client.go`)
-- `readPump`: frame binario → `session.Write`; frame de texto JSON `{type:"resize"}` → `session.Resize`.
-- `writePump`: drena el canal `send` y escribe frames binarios al socket.
-- `close()` está guardado con `sync.Once`: se llama desde `readPump` (desconexión) o desde `waitLoop` (muerte del proceso) sin riesgo de doble cierre.
+- `readPump` parsea JSON y traduce: `input`→`SendInput`, `text`→`SendText`, `key`→`SendKey`, `resize`→`Resize`, `pause`/`resume`→`Hub.setPaused`.
+- `writePump` drena el canal `send` y manda JSON de texto.
+
+### Render del frontend (subtleza importante)
+`ansi_up` arrastra estado de color SGR **entre llamadas** (está hecho para un stream). Como le pasamos un snapshot completo cada vez, se crea **una instancia nueva de `AnsiUp` por render** (`renderAnsi`) — si no, el color del final de un snapshot se filtra al inicio del siguiente.
+
+El repintado reemplaza todo el `innerHTML` del `<div>`, lo que rompería scroll y selección. Por eso `applyOutput` **congela la vista** (guarda el snapshot en `pendingText`) mientras el usuario está leyendo scrollback o tiene texto seleccionado, y lo pinta (`flushPending`) al volver al fondo.
+
+### Resize
+`Session.Resize` hace `tmux resize-window -x cols -y rows`. El TUI del harness recibe SIGWINCH y reenvuelve a ese ancho; `capture-pane` lo refleja. `window-size manual` (seteado al crear) evita que tmux re-ajuste el window.
 
 ### Sanitización de nombres de sesión
 `sanitizeName()` convierte el dir en un nombre seguro: NFD normalize, strip combining marks (acentos/tildes), reemplaza `/`, `\`, espacios por `-`, deja solo `[a-z0-9-]`, colapsa hyphens, lowercase. Si queda vacío → `"session"`. El frontend duplica esta lógica en JS (`sanitizeSessionName`) para resolver colisiones 409.
 
 ### Directorios
-`resolveDir()` strip leading slashes (`/Users/private` → `Users/private`), resuelve relativo al CWD de tclaw, y crea la carpeta con `MkdirAll` si no existe.
+`resolveDir()` strip leading slashes (`/Users/private` → `Users/private`), resuelve relativo al CWD de tclaw, y crea la carpeta con `MkdirAll` si no existe. `/api/dirs` lista las carpetas-proyecto bajo el CWD, saltando ocultas y las de `exclude_dirs`.
 
 ### Input: teclas y paste
-- Los keystrokes de xterm.js (escritorio) van como bytes crudos directo al PTY.
-- Los botones de la barra "nav" mandan secuencias ANSI crudas (`Up`→`\x1b[A`, `C-c`→`\x03`, etc., mapa `KEY_SEQ` en el frontend).
-- El composer y los comandos (`/clear`, transcripciones) usan **bracketed paste** (`\x1b[200~ ... \x1b[201~`) para que los saltos de línea queden literales en el input box del harness, seguido de `\r` para enviar. El botón **NL** manda un bracketed paste de un solo `\n` sin enviar.
-
-### Replay buffer
-Cada sesión guarda los últimos 256KB de salida del PTY. Al conectar un cliente se le manda ese buffer; xterm.js procesa las secuencias y termina en el estado actual de pantalla. Esto cubre la reconexión sin necesidad de tmux.
+- Los botones de la barra "nav" mandan nombres de tecla de tmux (`Up`, `Enter`, `C-c`, `BSpace`, …) vía `send-keys`.
+- El composer y los comandos (`/clear`, transcripciones) usan `paste-buffer` (`SendInput`): pega el texto y manda la tecla de envío. `submit_key: "none"` pega sin enviar (botón NL).
+- `capture-pane` se invoca con `-e -J -S -1000`: colores ANSI, líneas unidas y 1000 líneas de scrollback.
 
 ### Uploads y transcripción
 - Los uploads se guardan en `<session.Dir>/uploads/<filename>`. El nombre se sanitiza y se hace único añadiendo `-2`, `-3`, etc.
@@ -170,12 +199,12 @@ Cada sesión guarda los últimos 256KB de salida del PTY. Al conectar un cliente
 
 ## Pendientes / ideas futuras
 
-- **PoC con dtach**: hacer una prueba de concepto lanzando el harness bajo `dtach` (un socket por sesión) para recuperar la persistencia ante reinicios de tclaw y la adopción de sesiones al arrancar, sin volver a tmux. tclaw seguiría usando `creack/pty` igual, solo cambiaría el comando que lanza (`dtach -A <sock> <harness>`).
 - Confirmación / edición de transcripciones antes de mandarlas al agente, especialmente para SKUs / números / códigos donde STT suele fallar (`8.22.49` vs `82249`).
 - Instrucción en el `CLAUDE.md` / `AGENTS.md` del proyecto destino para tratar bloques `<transcript>` como STT potencialmente imperfecto.
+- Aviso visual ("↓ nuevo") cuando hay salida en buffer mientras la vista está congelada.
 - Crons y queues usando `claude -p` / `codex` headless para tareas en background.
 - Mover keyboard language y otras settings a una vista de configuración dedicada.
 
 ## Contexto del proyecto
 
-Proyecto personal para controlar Claude Code / Codex desde el iPhone u otra máquina sin tener que dejar una terminal abierta. Empezó usando tmux como proxy de texto (validado en 5 minutos con 3 comandos manuales antes de escribir código) y luego se migró a PTY directo + xterm.js a partir del PoC en `pty-experiment/`. El frontend tiene grabación de voz con transcripción, subida de imágenes y soporte dual claude/codex.
+Proyecto personal para controlar Claude Code / Codex desde el iPhone u otra máquina sin tener que dejar una terminal abierta. Empezó usando tmux como proxy de texto (validado en 5 minutos con 3 comandos manuales antes de escribir código), luego se migró a PTY directo + xterm.js a partir del PoC en `pty-experiment/`, y finalmente **se volvió a tmux** porque el scroll de xterm.js en móvil — que es donde se usa — era insoportable; se conservaron las features añadidas en la etapa PTY (barra de carpetas, routing por URL). El frontend tiene grabación de voz con transcripción, subida de imágenes y soporte dual claude/codex.

@@ -139,6 +139,8 @@ func handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	removeHub(name)
+
 	if err := deleteSession(name); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -183,17 +185,14 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	hub := getOrCreateHub(session)
 	client := &Client{
-		session: session,
-		conn:    conn,
-		send:    make(chan []byte, 256),
+		hub:  hub,
+		conn: conn,
+		send: make(chan []byte, 64),
 	}
 
-	if !session.addClient(client) {
-		conn.Close()
-		return
-	}
-
+	hub.addClient(client)
 	go client.writePump()
 	go client.readPump()
 }

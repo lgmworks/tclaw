@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>tclaw</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
   <style>
     * {
       margin: 0;
@@ -91,7 +90,7 @@
       align-items: center;
       gap: 2px;
     }
-    /* default state = stopped: just a folder, no live PTY session */
+    /* default state = stopped: just a folder, no live tmux session */
     .sessions-bar button {
       background: #16213e;
       color: #8a93a8;
@@ -105,7 +104,7 @@
       white-space: nowrap;
     }
     .sessions-bar button:hover { background: #1a1a2e; }
-    /* running = live PTY session for this folder */
+    /* running = live tmux session for this folder */
     .sessions-bar button.running { border-color: #2d6a4f; color: #95d5b2; }
     /* active = the session currently shown (wins over running) */
     .sessions-bar button.active { border-color: #e94560; color: #e94560; }
@@ -119,17 +118,28 @@
     }
     .sessions-bar .new-btn { color: #95d5b2; border-color: #2d6a4f; }
 
-    .terminal-wrap {
+    /* The terminal view: a plain scrollable element. ansi_up paints the
+       tmux capture-pane snapshot here, so scrolling is the browser's
+       native scroll — smooth on mobile, unlike a canvas terminal. */
+    .output {
       flex: 1 1 auto;
       min-height: 0;
-      overflow: hidden;
-      padding: 4px 6px;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 12px 16px;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      line-height: 1.4;
+      outline: none;
       background: #1a1a2e;
+      /* allow native selection + the iOS "Copy" callout */
+      user-select: text;
+      -webkit-user-select: text;
+      -webkit-touch-callout: default;
     }
-    .terminal-wrap.disconnected { opacity: 0.55; }
-    .terminal-host { width: 100%; height: 100%; }
-    .terminal-host .xterm { height: 100%; }
-    .terminal-host .xterm-viewport { overflow-y: auto; }
+    .output.disconnected { opacity: 0.6; }
+    .output.paused { opacity: 0.82; }
+    .output a { color: #7dd3fc; text-decoration: underline; }
 
     .mobile-composer {
       display: flex;
@@ -168,6 +178,14 @@
       cursor: pointer;
     }
     @media (hover: none), (pointer: coarse) {
+      .output {
+        font-size: 12px;
+        line-height: 1.3;
+        padding: 8px 10px;
+        overflow-x: auto;
+        white-space: pre;
+        word-wrap: normal;
+      }
       .keys-bar button {
         min-width: 0;
         padding: 0 8px;
@@ -237,6 +255,11 @@
       border-color: #e94560;
       color: #e94560;
     }
+    /* the sync-paused toggle stands out when paused */
+    .keys-bar button.paused-on {
+      border-color: #7f4f24;
+      color: #ddb892;
+    }
     .keys-bar .composer-toggle {
       font-size: 24px;
       line-height: 1;
@@ -300,82 +323,6 @@
       border-color: #7f1d2d;
       outline: none;
       box-shadow: none;
-    }
-
-    .textview-overlay {
-      position: fixed;
-      inset: 0;
-      z-index: 100;
-      background: #1a1a2e;
-      display: flex;
-      flex-direction: column;
-    }
-    .textview-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 8px 16px;
-      background: #16213e;
-      border-bottom: 1px solid #0f3460;
-      flex: 0 0 auto;
-    }
-    .textview-header h2 { font-size: 13px; color: #53a8b6; font-weight: normal; }
-    .textview-header button {
-      background: #1a1a2e;
-      color: #e0e0e0;
-      border: 1px solid #0f3460;
-      border-radius: 4px;
-      padding: 5px 14px;
-      font-family: inherit;
-      font-size: 12px;
-      cursor: pointer;
-    }
-    .textview-body {
-      flex: 1 1 auto;
-      min-height: 0;
-      overflow: auto;
-      -webkit-overflow-scrolling: touch;
-      padding: 12px 14px;
-      margin: 0;
-      white-space: pre;
-      font-family: inherit;
-      font-size: 12px;
-      line-height: 1.4;
-      color: #e0e0e0;
-      /* Re-enable native iOS text selection + the "Copy" callout,
-         which the global reset disables. */
-      user-select: text;
-      -webkit-user-select: text;
-      -webkit-touch-callout: default;
-    }
-    .textview-footer {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 16px;
-      background: #16213e;
-      border-top: 1px solid #0f3460;
-      flex: 0 0 auto;
-    }
-    .textview-footer button {
-      background: #1a1a2e;
-      color: #e0e0e0;
-      border: 1px solid #0f3460;
-      border-radius: 4px;
-      padding: 9px 14px;
-      font-family: inherit;
-      font-size: 12px;
-      cursor: pointer;
-    }
-    .textview-footer button:active { border-color: #e94560; color: #e94560; }
-    .textview-footer .textview-status {
-      margin-left: auto;
-      color: #95d5b2;
-      font-size: 12px;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
     }
 
     .modal-overlay {
@@ -442,7 +389,8 @@
 <script type="importmap">
   {
     "imports": {
-      "vue": "https://unpkg.com/vue@3/dist/vue.esm-browser.js"
+      "vue": "https://unpkg.com/vue@3/dist/vue.esm-browser.js",
+      "ansi_up": "https://cdn.jsdelivr.net/npm/ansi_up@6.0.2/ansi_up.js"
     }
   }
 </script>
@@ -478,9 +426,13 @@
     </div>
   </div>
 
-  <div class="terminal-wrap" :class="{ disconnected: !connected }">
-    <div ref="terminalEl" class="terminal-host"></div>
-  </div>
+  <div
+    class="output"
+    :class="{ disconnected: !connected, paused: paused }"
+    ref="outputEl"
+    @scroll="flushPending"
+    v-html="outputHtml"
+  ></div>
 
   <div class="bottom-pane">
     <div class="mobile-composer" v-show="showMobileComposer">
@@ -513,8 +465,18 @@
           title="Mostrar/ocultar campo de texto"
         >⌨</button>
         <template v-if="actionSet === 'main'">
-          <button @click="copyTerminal" :disabled="!activeSession">{{ copied ? '✓' : 'Copy' }}</button>
-          <button @click="openTextView" :disabled="!activeSession">📄</button>
+          <button
+            :class="{ 'paused-on': paused }"
+            @click="toggleSync"
+            :disabled="!connected"
+            :title="paused ? 'Reanudar sync con tmux' : 'Pausar sync con tmux'"
+          >{{ paused ? '▶ Sync' : '⏸ Sync' }}</button>
+          <button
+            @click="sendResize()"
+            :disabled="!connected"
+            title="Ajustar tmux al ancho de la pantalla"
+          >↔ Fit</button>
+          <button @click="copyOutput" :disabled="!activeSession">{{ copied ? '✓' : 'Copy' }}</button>
           <button @click="sendInput('/clear')" :disabled="!activeSession">Clear</button>
           <button @click="triggerImageUpload" :disabled="!activeSession || uploadInProgress">Img</button>
           <button @click="startVoiceRecording" :disabled="!activeSession || uploadInProgress">Mic</button>
@@ -542,20 +504,6 @@
       </template>
       <input ref="imageInputEl" type="file" accept="image/*" style="display:none" @change="handleImageSelected" />
       <span class="upload-status" :class="{ error: uploadError }">{{ uploadStatusText }}</span>
-    </div>
-  </div>
-
-  <!-- Text view: plain-text overlay for native selection / copy -->
-  <div class="textview-overlay" v-if="showTextView">
-    <div class="textview-header">
-      <h2>Mantén pulsado para seleccionar y copiar</h2>
-      <button @click="closeTextView">Cerrar ✕</button>
-    </div>
-    <pre class="textview-body">{{ textViewContent }}</pre>
-    <div class="textview-footer">
-      <button @click="copyTextViewSelection">Copiar selección</button>
-      <button @click="copyTextViewAll">Copiar todo</button>
-      <span class="textview-status">{{ textViewStatus }}</span>
     </div>
   </div>
 
@@ -593,27 +541,18 @@
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
-
 <script type="module">
   import { createApp, computed, ref, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
-
-  // Raw escape sequences for the named keys exposed in the nav bar.
-  const KEY_SEQ = {
-    Up: '\x1b[A', Down: '\x1b[B', Right: '\x1b[C', Left: '\x1b[D',
-    Enter: '\r', Tab: '\t', Escape: '\x1b', BSpace: '\x7f', Delete: '\x1b[3~',
-    'C-c': '\x03', 'C-b': '\x02', 'C-d': '\x04',
-    'C-l': '\x0c', 'C-u': '\x15', 'C-w': '\x17',
-  }
+  import { AnsiUp } from 'ansi_up'
 
   createApp({
     setup() {
       const dirs = ref([])             // [{ name, session, running }]
       const activeSession = ref(null)  // sanitized session name currently shown
       const defaultSession = ref('agent')
+      const output = ref('')           // latest tmux capture-pane snapshot
       const connected = ref(false)
+      const paused = ref(false)        // true = tmux sync polling is paused
       const harness = ref('claude')
       const showNewModal = ref(false)
       const showAuthModal = ref(false)
@@ -625,16 +564,13 @@
       const uploadInProgress = ref(false)
       const uploadError = ref('')
       const copied = ref(false)
-      const showTextView = ref(false)
-      const textViewContent = ref('')
-      const textViewStatus = ref('')
       const isRecording = ref(false)
       const recordingSeconds = ref(0)
       const showMobileComposer = ref(localStorage.getItem('tclaw_show_composer') === '1')
       const mobileComposerText = ref('')
       const actionSetStorageKey = 'tclaw_action_set'
       const actionSet = ref(localStorage.getItem(actionSetStorageKey) || 'main')
-      const terminalEl = ref(null)
+      const outputEl = ref(null)
       const mobileComposerEl = ref(null)
       const newDirInput = ref(null)
       const imageInputEl = ref(null)
@@ -647,9 +583,7 @@
       let micStream = null
       let recordingChunks = []
       let recordingTimer = null
-      let term = null
-      let fitAddon = null
-      let resizeObserver = null
+      let resizeDebounce = null
       const apiBase = window.location.origin
       const authStorageKey = 'tclaw_auth_token'
 
@@ -657,95 +591,148 @@
       const statusText = ref('disconnected')
 
       function updateStatus() {
-        if (connected.value) {
-          statusClass.value = 'status-ready'
-          statusText.value = 'connected'
-        } else {
+        if (!connected.value) {
           statusClass.value = 'status-disconnected'
           statusText.value = 'disconnected'
+        } else if (paused.value) {
+          statusClass.value = 'status-busy'
+          statusText.value = 'sync pausado'
+        } else {
+          statusClass.value = 'status-ready'
+          statusText.value = 'connected'
         }
       }
 
-      // --- terminal ----------------------------------------------------------
+      // --- terminal render ---------------------------------------------------
 
-      function fitTerminal() {
-        if (!fitAddon || !term) return
-        try {
-          fitAddon.fit()
-        } catch {
-          // container not measurable yet — ignore
-        }
+      // ansi_up carries SGR colour state across calls — it is built to parse
+      // a continuous stream. We hand it a whole capture-pane snapshot each
+      // time, so a shared instance would bleed one snapshot's trailing colour
+      // into the start of the next. A fresh instance per render stays pure.
+      function renderAnsi(text) {
+        return new AnsiUp().ansi_to_html(text || '')
       }
 
-      function setupTerminal() {
-        const coarse = window.matchMedia('(pointer: coarse)').matches
-        term = new Terminal({
-          cursorBlink: true,
-          fontSize: coarse ? 11 : 14,
-          fontFamily: 'SF Mono, Fira Code, Menlo, Consolas, monospace',
-          scrollback: 5000,
-          smoothScrollDuration: 120,
-          theme: {
-            background: '#1a1a2e',
-            foreground: '#e0e0e0',
-            cursor: '#e94560',
-            selectionBackground: '#0f3460',
-          },
+      const outputHtml = computed(() => renderAnsi(output.value))
+
+      // pendingText holds the latest snapshot left unpainted because the user
+      // is reading scrollback or selecting text. Painting replaces the whole
+      // DOM subtree, which yanks the scroll position and kills any selection —
+      // so we freeze the view and flush once they are back at the bottom.
+      // (The pause button stops the server poll entirely; this is the
+      // automatic, client-side counterpart.)
+      let pendingText = null
+
+      function nearBottom(el) {
+        return el.scrollHeight - el.scrollTop - el.clientHeight < 48
+      }
+
+      // selectingOutput: the user has an active selection inside the terminal.
+      function selectingOutput(el) {
+        const sel = window.getSelection && window.getSelection()
+        if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false
+        return el.contains(sel.anchorNode) || el.contains(sel.focusNode)
+      }
+
+      function paintOutput(text) {
+        output.value = text || ''
+        nextTick(() => {
+          const e = outputEl.value
+          if (e) e.scrollTop = e.scrollHeight
         })
-        fitAddon = new FitAddon.FitAddon()
-        term.loadAddon(fitAddon)
-        term.loadAddon(new WebLinksAddon.WebLinksAddon())
-        term.open(terminalEl.value)
+      }
 
-        term.onData((data) => sendRaw(data))
-        term.onResize(() => sendResize())
+      // applyOutput paints a snapshot only while the user is following the
+      // bottom and not selecting; otherwise it buffers it (pendingText) and
+      // leaves the view — and the scroll position — untouched.
+      function applyOutput(text) {
+        const next = text || ''
+        if (next === output.value) {
+          pendingText = null
+          return
+        }
+        const el = outputEl.value
+        if (!el) {
+          output.value = next
+          return
+        }
+        if (!nearBottom(el) || selectingOutput(el)) {
+          pendingText = next
+          return
+        }
+        pendingText = null
+        paintOutput(next)
+      }
 
-        fitTerminal()
+      // flushPending paints a buffered snapshot once the user returns to the
+      // bottom with no active selection. Wired to scroll + selectionchange.
+      function flushPending() {
+        if (pendingText === null) return
+        const el = outputEl.value
+        if (!el || !nearBottom(el) || selectingOutput(el)) return
+        const t = pendingText
+        pendingText = null
+        paintOutput(t)
+      }
 
-        resizeObserver = new ResizeObserver(() => fitTerminal())
-        resizeObserver.observe(terminalEl.value)
+      // computeSize measures the .output box in character cells so we can
+      // resize the tmux window to the real screen width.
+      function computeSize() {
+        const el = outputEl.value
+        if (!el || !el.clientWidth) return null
+        const probe = document.createElement('span')
+        probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;'
+        probe.textContent = 'M'.repeat(100)
+        el.appendChild(probe)
+        const charW = probe.getBoundingClientRect().width / 100
+        el.removeChild(probe)
+        const cs = getComputedStyle(el)
+        const lineH = parseFloat(cs.lineHeight) || (parseFloat(cs.fontSize) * 1.3)
+        const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight)
+        const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)
+        if (!charW || !lineH) return null
+        return {
+          cols: Math.max(20, Math.floor((el.clientWidth - padX) / charW)),
+          rows: Math.max(10, Math.floor((el.clientHeight - padY) / lineH)),
+        }
       }
 
       // --- websocket / input -------------------------------------------------
 
-      function sendRaw(data) {
-        if (!ws || ws.readyState !== WebSocket.OPEN || !data) return
-        ws.send(new TextEncoder().encode(data))
-      }
-
-      // sendInput pastes text via bracketed paste so embedded newlines stay
-      // literal, then optionally submits with Enter.
-      function sendInput(text, submit = true) {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return
-        sendRaw('\x1b[200~' + text + '\x1b[201~')
-        if (submit) {
-          setTimeout(() => sendRaw('\r'), 120)
-        }
+      function sendInput(text, submitKey = 'Enter') {
+        if (!ws || ws.readyState !== WebSocket.OPEN || !text) return
+        ws.send(JSON.stringify({ type: 'input', text, submit_key: submitKey }))
       }
 
       function sendText(text) {
-        sendRaw(text)
+        if (!ws || ws.readyState !== WebSocket.OPEN || !text) return
+        ws.send(JSON.stringify({ type: 'text', text }))
       }
 
       function sendKey(name) {
-        sendRaw(KEY_SEQ[name] || name)
+        if (!ws || ws.readyState !== WebSocket.OPEN || !name) return
+        ws.send(JSON.stringify({ type: 'key', text: name }))
       }
 
-      // copyTerminal copies the current selection to the clipboard. With no
-      // selection it copies the visible screen — handy on mobile, where
-      // precise selection is awkward.
-      async function copyTerminal() {
-        if (!term) return
-        let text = term.getSelection()
-        if (!text) {
-          const buf = term.buffer.active
-          const lines = []
-          for (let i = 0; i < term.rows; i++) {
-            const line = buf.getLine(buf.viewportY + i)
-            if (line) lines.push(line.translateToString(true))
-          }
-          text = lines.join('\n').replace(/\s+$/, '')
-        }
+      // sendResize tells tmux to resize the window to the screen width.
+      // Called automatically on connect / orientation change, and manually
+      // from the Fit button.
+      function sendResize() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return
+        const size = computeSize()
+        if (!size) return
+        ws.send(JSON.stringify({ type: 'resize', cols: size.cols, rows: size.rows }))
+      }
+
+      // toggleSync pauses / resumes the tmux capture-pane polling.
+      function toggleSync() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return
+        ws.send(JSON.stringify({ type: paused.value ? 'resume' : 'pause' }))
+      }
+
+      async function copyOutput() {
+        const sel = (window.getSelection && window.getSelection().toString()) || ''
+        const text = sel || output.value
         if (!text) return
         try {
           await navigator.clipboard.writeText(text)
@@ -754,61 +741,6 @@
         } catch {
           uploadError.value = 'No se pudo copiar'
         }
-      }
-
-      // openTextView snapshots the terminal buffer (screen + scrollback) into
-      // a plain-text overlay where native iOS selection / copy works.
-      function openTextView() {
-        if (!term) return
-        const buf = term.buffer.active
-        const lines = []
-        for (let i = 0; i < buf.length; i++) {
-          const line = buf.getLine(i)
-          lines.push(line ? line.translateToString(true) : '')
-        }
-        textViewContent.value = lines.join('\n').replace(/\s+$/, '')
-        showTextView.value = true
-      }
-
-      function closeTextView() {
-        showTextView.value = false
-        textViewStatus.value = ''
-      }
-
-      function flashTextViewStatus(msg) {
-        textViewStatus.value = msg
-        setTimeout(() => {
-          if (textViewStatus.value === msg) textViewStatus.value = ''
-        }, 1600)
-      }
-
-      async function copyTextViewSelection() {
-        const sel = (window.getSelection && window.getSelection().toString()) || ''
-        if (!sel) {
-          flashTextViewStatus('Nada seleccionado')
-          return
-        }
-        try {
-          await navigator.clipboard.writeText(sel)
-          flashTextViewStatus('Selección copiada ✓')
-        } catch {
-          flashTextViewStatus('No se pudo copiar')
-        }
-      }
-
-      async function copyTextViewAll() {
-        if (!textViewContent.value) return
-        try {
-          await navigator.clipboard.writeText(textViewContent.value)
-          flashTextViewStatus('Todo copiado ✓')
-        } catch {
-          flashTextViewStatus('No se pudo copiar')
-        }
-      }
-
-      function sendResize() {
-        if (!ws || ws.readyState !== WebSocket.OPEN || !term) return
-        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
       }
 
       function currentAuthToken() {
@@ -891,6 +823,7 @@
         }
 
         connected.value = false
+        paused.value = false
         updateStatus()
 
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -900,7 +833,6 @@
           url.searchParams.set('token', token)
         }
         const newWs = new WebSocket(url.toString())
-        newWs.binaryType = 'arraybuffer'
         ws = newWs
         let opened = false
 
@@ -910,17 +842,24 @@
           connected.value = true
           reconnectAttempts = 0
           updateStatus()
-          fitTerminal()
-          sendResize()
+          // Match the tmux window to this device's screen width.
+          nextTick(() => sendResize())
           fetchDirs()
         }
 
         newWs.onmessage = (e) => {
-          if (ws !== newWs || !term) return
-          if (e.data instanceof ArrayBuffer) {
-            term.write(new Uint8Array(e.data))
-          } else {
-            term.write(e.data)
+          if (ws !== newWs) return
+          let msg
+          try {
+            msg = JSON.parse(e.data)
+          } catch {
+            return
+          }
+          if (msg.type === 'snapshot' || msg.type === 'update') {
+            applyOutput(msg.text)
+          } else if (msg.type === 'sync') {
+            paused.value = !!msg.paused
+            updateStatus()
           }
         }
 
@@ -975,7 +914,8 @@
         if (window.location.pathname !== path) {
           history.pushState({}, '', path)
         }
-        if (term) term.reset()
+        output.value = ''
+        pendingText = null
         connectWS(name)
       }
 
@@ -1032,8 +972,8 @@
         await openSessionByName(seg || defaultSession.value)
       }
 
-      // stopSession kills the PTY session inside tclaw. The folder stays;
-      // it just has no live session anymore.
+      // stopSession kills the tmux session. The folder stays; it just has no
+      // live session anymore.
       async function stopSession(name) {
         await apiFetch(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' })
         if (activeSession.value === name) {
@@ -1041,7 +981,8 @@
           if (ws) { ws.close(); ws = null }
           connected.value = false
           updateStatus()
-          if (term) term.reset()
+          output.value = ''
+          pendingText = null
         }
         await fetchDirs()
       }
@@ -1123,7 +1064,8 @@
 
       function insertComposerNewline() {
         if (!activeSession.value) return
-        sendInput('\n', false)
+        // paste a newline into the harness input box without submitting
+        sendInput('\n', 'none')
         nextTick(() => mobileComposerEl.value?.focus())
       }
 
@@ -1390,49 +1332,49 @@
         routeFromURL()
       }
 
+      function onWindowResize() {
+        if (resizeDebounce) clearTimeout(resizeDebounce)
+        resizeDebounce = setTimeout(() => {
+          resizeDebounce = null
+          sendResize()
+        }, 300)
+      }
+
       onMounted(() => {
-        setupTerminal()
         document.addEventListener('visibilitychange', onVisibilityChange)
         window.addEventListener('online', onOnline)
         window.addEventListener('popstate', onPopState)
+        window.addEventListener('resize', onWindowResize)
+        document.addEventListener('selectionchange', flushPending)
         ;(async () => {
           await fetchConfig()
           await fetchDirs()
           await routeFromURL()
         })()
-        nextTick(() => {
-          resizeMobileComposer()
-          fitTerminal()
-        })
+        nextTick(() => resizeMobileComposer())
       })
 
       onBeforeUnmount(() => {
         document.removeEventListener('visibilitychange', onVisibilityChange)
         window.removeEventListener('online', onOnline)
         window.removeEventListener('popstate', onPopState)
+        window.removeEventListener('resize', onWindowResize)
+        document.removeEventListener('selectionchange', flushPending)
+        if (resizeDebounce) clearTimeout(resizeDebounce)
         cancelReconnect()
-        if (resizeObserver) {
-          resizeObserver.disconnect()
-          resizeObserver = null
-        }
         cancelVoiceRecording()
         stopMicStream()
-        if (term) {
-          term.dispose()
-          term = null
-        }
       })
 
       return {
-        dirs, activeSession, defaultSession, connected, harness,
+        dirs, activeSession, defaultSession, output, outputHtml, connected, paused, harness,
         showNewModal, showAuthModal, newDir, newSessionError, authError, authTokenInput,
         uploadProgress, uploadInProgress, uploadError, uploadStatusText, copied,
-        showTextView, textViewContent, textViewStatus,
         isRecording, recordingDurationText, showMobileComposer, mobileComposerText, actionSet,
-        terminalEl, mobileComposerEl, newDirInput, imageInputEl,
+        outputEl, mobileComposerEl, newDirInput, imageInputEl,
         statusClass, statusText,
-        openDir, stopSession, createFromModal, sendKey, sendText, sendInput, copyTerminal,
-        openTextView, closeTextView, copyTextViewSelection, copyTextViewAll,
+        openDir, stopSession, createFromModal, sendKey, sendText, sendInput,
+        sendResize, toggleSync, copyOutput, flushPending,
         triggerImageUpload, handleImageSelected, startVoiceRecording, cancelVoiceRecording,
         finishVoiceRecording, saveHarness, saveAuthToken, resizeMobileComposer, toggleActionSet,
         toggleComposer, sendMobileComposer, insertComposerNewline
