@@ -465,6 +465,8 @@
           title="Mostrar/ocultar campo de texto"
         >⌨</button>
         <template v-if="actionSet === 'main'">
+          <button @click="startVoiceRecording" :disabled="!activeSession || uploadInProgress">Mic</button>
+          <button @click="triggerImageUpload" :disabled="!activeSession || uploadInProgress">Img</button>
           <button
             :class="{ 'paused-on': paused }"
             @click="toggleSync"
@@ -478,8 +480,6 @@
           >↔ Fit</button>
           <button @click="copyOutput" :disabled="!activeSession">{{ copied ? '✓' : 'Copy' }}</button>
           <button @click="sendInput('/clear')" :disabled="!activeSession">Clear</button>
-          <button @click="triggerImageUpload" :disabled="!activeSession || uploadInProgress">Img</button>
-          <button @click="startVoiceRecording" :disabled="!activeSession || uploadInProgress">Mic</button>
         </template>
         <template v-else>
           <span class="arrow-pad">
@@ -502,7 +502,7 @@
         </template>
         <button @click="insertComposerNewline" :disabled="!activeSession">NL</button>
       </template>
-      <input ref="imageInputEl" type="file" accept="image/*" style="display:none" @change="handleImageSelected" />
+      <input ref="imageInputEl" type="file" accept="image/*" multiple style="display:none" @change="handleImageSelected" />
       <span class="upload-status" :class="{ error: uploadError }">{{ uploadStatusText }}</span>
     </div>
   </div>
@@ -1081,76 +1081,134 @@
       }
 
       function handleImageSelected(event) {
-        const file = event.target.files?.[0]
-        if (!file) return
-        uploadFile(file)
+        const files = Array.from(event.target.files || [])
         event.target.value = ''
+        if (files.length === 0) return
+        uploadImages(files)
       }
 
-      function uploadFile(file) {
+      // uploadOne posts a single file to the session's uploads endpoint and
+      // resolves with the server's JSON response. onProgress (optional)
+      // receives 0..100 as the upload streams.
+      function uploadOne(file, onProgress) {
+        return new Promise((resolve, reject) => {
+          const form = new FormData()
+          form.append('file', file)
+
+          const xhr = new XMLHttpRequest()
+          xhr.open('POST', `${apiBase}/api/sessions/${encodeURIComponent(activeSession.value)}/uploads`)
+          const token = currentAuthToken()
+          if (token) {
+            xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+          }
+
+          xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable && onProgress) {
+              onProgress(Math.round((event.loaded / event.total) * 100))
+            }
+          }
+
+          xhr.onload = () => {
+            if (xhr.status === 401) {
+              setUnauthorized()
+              reject(new Error('unauthorized'))
+              return
+            }
+            if (xhr.status < 200 || xhr.status >= 300) {
+              reject(new Error((xhr.responseText || '').trim() || 'Upload failed'))
+              return
+            }
+            try {
+              resolve(JSON.parse(xhr.responseText))
+            } catch {
+              reject(new Error('Invalid upload response'))
+            }
+          }
+
+          xhr.onerror = () => reject(new Error('Upload failed'))
+          xhr.send(form)
+        })
+      }
+
+      // uploadFile uploads a single file and dispatches the result. Used by
+      // the voice flow (audio → transcript) and as the single-file primitive.
+      async function uploadFile(file) {
+        uploadError.value = ''
+        uploadInProgress.value = true
+        uploadProgress.value = 0
+        try {
+          const data = await uploadOne(file, (pct) => { uploadProgress.value = pct })
+          uploadInProgress.value = false
+          uploadProgress.value = 100
+          if (data.transcript) {
+            sendInput(`<transcript>${data.transcript}</transcript>`)
+          } else {
+            sendText(`@${data.full_path} `)
+          }
+          if (data.transcription_error && !data.transcript) {
+            uploadError.value = data.transcription_error
+          }
+          nextTick(() => focusComposer())
+          setTimeout(() => {
+            if (!uploadInProgress.value) {
+              uploadProgress.value = 0
+              if (!data.transcription_error || data.transcript) {
+                uploadError.value = ''
+              }
+            }
+          }, 800)
+        } catch (e) {
+          uploadInProgress.value = false
+          uploadError.value = e.message || 'Upload failed'
+        }
+      }
+
+      // uploadImages uploads several images sequentially and then sends ONE
+      // message to the harness referencing all of them:
+      //     @/abs/p1 @/abs/p2 @/abs/p3
+      // A mid-batch failure doesn't abort the rest; the successful paths are
+      // still sent, and the status shows how many made it through.
+      async function uploadImages(files) {
         uploadError.value = ''
         uploadInProgress.value = true
         uploadProgress.value = 0
 
-        const form = new FormData()
-        form.append('file', file)
+        const paths = []
+        let lastError = null
 
-        const xhr = new XMLHttpRequest()
-        xhr.open('POST', `${apiBase}/api/sessions/${encodeURIComponent(activeSession.value)}/uploads`)
-        const token = currentAuthToken()
-        if (token) {
-          xhr.setRequestHeader('Authorization', `Bearer ${token}`)
-        }
-
-        xhr.upload.onprogress = (event) => {
-          if (!event.lengthComputable) return
-          uploadProgress.value = Math.round((event.loaded / event.total) * 100)
-        }
-
-        xhr.onload = () => {
-          uploadInProgress.value = false
-
-          if (xhr.status === 401) {
-            setUnauthorized()
-            return
-          }
-
-          if (xhr.status < 200 || xhr.status >= 300) {
-            uploadError.value = xhr.responseText?.trim() || 'Upload failed'
-            return
-          }
-
+        for (let i = 0; i < files.length; i++) {
           try {
-            const data = JSON.parse(xhr.responseText)
-            uploadProgress.value = 100
-            if (data.transcript) {
-              sendInput(`<transcript>${data.transcript}</transcript>`)
-            } else {
-              sendText(`@${data.full_path} `)
-            }
-            if (data.transcription_error && !data.transcript) {
-              uploadError.value = data.transcription_error
-            }
-            nextTick(() => focusComposer())
-            setTimeout(() => {
-              if (!uploadInProgress.value) {
-                uploadProgress.value = 0
-                if (!data.transcription_error || data.transcript) {
-                  uploadError.value = ''
-                }
-              }
-            }, 800)
-          } catch {
-            uploadError.value = 'Invalid upload response'
+            const data = await uploadOne(files[i], (pct) => {
+              uploadProgress.value = Math.round(((i + pct / 100) / files.length) * 100)
+            })
+            if (data.full_path) paths.push(data.full_path)
+          } catch (e) {
+            lastError = e
           }
         }
 
-        xhr.onerror = () => {
-          uploadInProgress.value = false
-          uploadError.value = 'Upload failed'
+        uploadInProgress.value = false
+
+        if (paths.length > 0) {
+          sendText(paths.map((p) => `@${p}`).join(' ') + ' ')
+          uploadProgress.value = 100
+        } else {
+          uploadProgress.value = 0
         }
 
-        xhr.send(form)
+        if (lastError && paths.length === 0) {
+          uploadError.value = lastError.message || 'Upload failed'
+        } else if (lastError) {
+          uploadError.value = `${paths.length}/${files.length} subidos`
+        }
+
+        nextTick(() => focusComposer())
+        setTimeout(() => {
+          if (!uploadInProgress.value) {
+            uploadProgress.value = 0
+            if (paths.length > 0 && !lastError) uploadError.value = ''
+          }
+        }, 1000)
       }
 
       // --- voice recording ---------------------------------------------------
