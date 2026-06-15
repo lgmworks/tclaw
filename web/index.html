@@ -467,6 +467,7 @@
         <template v-if="actionSet === 'main'">
           <button @click="startVoiceRecording" :disabled="!activeSession || uploadInProgress">Mic</button>
           <button @click="triggerImageUpload" :disabled="!activeSession || uploadInProgress">Img</button>
+          <button @click="triggerFileUpload" :disabled="!activeSession || uploadInProgress">File</button>
           <button
             :class="{ 'paused-on': paused }"
             @click="toggleSync"
@@ -503,6 +504,7 @@
         <button @click="insertComposerNewline" :disabled="!activeSession">NL</button>
       </template>
       <input ref="imageInputEl" type="file" accept="image/*" multiple style="display:none" @change="handleImageSelected" />
+      <input ref="fileInputEl" type="file" multiple style="display:none" @change="handleFileSelected" />
       <span class="upload-status" :class="{ error: uploadError }">{{ uploadStatusText }}</span>
     </div>
   </div>
@@ -574,6 +576,7 @@
       const mobileComposerEl = ref(null)
       const newDirInput = ref(null)
       const imageInputEl = ref(null)
+      const fileInputEl = ref(null)
 
       let ws = null
       let reconnectTimer = null
@@ -1080,11 +1083,23 @@
         imageInputEl.value?.click()
       }
 
+      function triggerFileUpload() {
+        uploadError.value = ''
+        fileInputEl.value?.click()
+      }
+
       function handleImageSelected(event) {
         const files = Array.from(event.target.files || [])
         event.target.value = ''
         if (files.length === 0) return
-        uploadImages(files)
+        uploadFiles(files)
+      }
+
+      function handleFileSelected(event) {
+        const files = Array.from(event.target.files || [])
+        event.target.value = ''
+        if (files.length === 0) return
+        uploadFiles(files)
       }
 
       // uploadOne posts a single file to the session's uploads endpoint and
@@ -1163,12 +1178,12 @@
         }
       }
 
-      // uploadImages uploads several images sequentially and then sends ONE
+      // uploadFiles uploads several files sequentially and then sends ONE
       // message to the harness referencing all of them:
       //     @/abs/p1 @/abs/p2 @/abs/p3
       // A mid-batch failure doesn't abort the rest; the successful paths are
       // still sent, and the status shows how many made it through.
-      async function uploadImages(files) {
+      async function uploadFiles(files) {
         uploadError.value = ''
         uploadInProgress.value = true
         uploadProgress.value = 0
@@ -1429,11 +1444,12 @@
         showNewModal, showAuthModal, newDir, newSessionError, authError, authTokenInput,
         uploadProgress, uploadInProgress, uploadError, uploadStatusText, copied,
         isRecording, recordingDurationText, showMobileComposer, mobileComposerText, actionSet,
-        outputEl, mobileComposerEl, newDirInput, imageInputEl,
+        outputEl, mobileComposerEl, newDirInput, imageInputEl, fileInputEl,
         statusClass, statusText,
         openDir, stopSession, createFromModal, sendKey, sendText, sendInput,
         sendResize, toggleSync, copyOutput, flushPending,
-        triggerImageUpload, handleImageSelected, startVoiceRecording, cancelVoiceRecording,
+        triggerImageUpload, triggerFileUpload, handleImageSelected, handleFileSelected,
+        startVoiceRecording, cancelVoiceRecording,
         finishVoiceRecording, saveHarness, saveAuthToken, resizeMobileComposer, toggleActionSet,
         toggleComposer, sendMobileComposer, insertComposerNewline
       }
